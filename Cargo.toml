@@ -1,0 +1,15 @@
+[package]
+name = "mpi-k8s"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+kube = { version = "3", features = ["runtime", "derive"] }
+k8s-openapi = { version = "0.27", features = ["v1_35"] }
+tokio = { version = "1", features = ["rt", "macros"] }
+thiserror = "2"
+anyhow = "1"
+
+[build-dependencies]
+bindgen = "0.72"
+pkg-config = "0.3"
