@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pkg-config:*)",
+      "Bash(cargo check:*)"
+    ]
+  }
+}
