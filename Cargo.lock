@@ -955,6 +955,7 @@ dependencies = [
  "bindgen",
  "k8s-openapi",
  "kube",
+ "libc",
  "pkg-config",
  "thiserror 2.0.17",
  "tokio",

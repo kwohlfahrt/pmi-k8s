@@ -1,0 +1,73 @@
+use std::ffi::{CStr, c_void};
+use std::mem::MaybeUninit;
+
+use super::sys;
+
+impl Drop for sys::pmix_value_t {
+    fn drop(&mut self) {
+        unsafe { sys::PMIx_Value_free(self, 1) };
+    }
+}
+
+macro_rules! pmix_value_from {
+    ($t:ty, $variant:ident, $tag:ident) => {
+        impl From<&$t> for sys::pmix_value_t {
+            fn from(src: &$t) -> Self {
+                let tag = sys::$tag as u16;
+                let src = src as *const $t as *const c_void;
+                let mut v = MaybeUninit::<Self>::uninit();
+                // PMIx_Value_load copies data out of src
+                let status = unsafe { sys::PMIx_Value_load(v.as_mut_ptr(), src, tag) };
+                assert!(status == sys::PMIX_SUCCESS as i32);
+                unsafe { v.assume_init() }
+            }
+        }
+    };
+}
+
+macro_rules! pmix_value_from_newtype {
+    ($t:ty, $newtype:ident, $variant:ident, $tag:ident) => {
+        pub struct $newtype(pub $t);
+
+        impl From<$newtype> for sys::pmix_value_t {
+            fn from(val: $newtype) -> Self {
+                sys::pmix_value_t {
+                    type_: sys::$tag as u16,
+                    data: sys::pmix_value__bindgen_ty_1 { $variant: val.0 },
+                }
+            }
+        }
+    };
+}
+
+pmix_value_from!(bool, flag, PMIX_BOOL);
+pmix_value_from_newtype!(u8, Byte, byte, PMIX_BYTE);
+pmix_value_from!(CStr, string, PMIX_STRING);
+pmix_value_from!(usize, size, PMIX_SIZE);
+pmix_value_from_newtype!(libc::pid_t, Pid, pid, PMIX_PID);
+pmix_value_from_newtype!(libc::c_int, Int, pid, PMIX_PID);
+pmix_value_from!(i8, int8, PMIX_INT8);
+pmix_value_from!(i16, int16, PMIX_INT16);
+pmix_value_from!(i32, int32, PMIX_INT32);
+pmix_value_from!(i64, int64, PMIX_INT64);
+pmix_value_from_newtype!(libc::c_uint, UInt, uint, PMIX_UINT64);
+pmix_value_from!(u8, uint8, PMIX_UINT8);
+pmix_value_from!(u16, uint16, PMIX_UINT16);
+pmix_value_from!(u32, uint32, PMIX_UINT32);
+pmix_value_from!(u64, uint64, PMIX_UINT64);
+pmix_value_from!(f32, fval, PMIX_FLOAT);
+pmix_value_from!(f64, dval, PMIX_DOUBLE);
+pmix_value_from!(sys::timeval, tv, PMIX_TIMEVAL);
+pmix_value_from_newtype!(sys::time_t, Time, time, PMIX_TIME);
+// pmix_value_from_newtype!(sys::pmix_status_t, Status, status, PMIX_STATUS);
+pmix_value_from_newtype!(sys::pmix_rank_t, Rank, rank, PMIX_PROC_RANK);
+// pmix_proc_t *proc; // version 2.025
+pmix_value_from!(sys::pmix_byte_object_t, bo, PMIX_BYTE_OBJECT);
+// pmix_value_from!(sys::pmix_persistence_t, persist, PMIX_PERSIST);
+// pmix_value_from!(sys::pmix_scope_t, scope, PMIX_SCOPE);
+// pmix_value_from!(sys::pmix_data_range_t, range, PMIX_DATA_RANGE);
+// pmix_value_from!(sys::pmix_proc_state_t, state, PMIX_PROC_STATE);
+// pmix_proc_info_t *pinfo; // version 2.031
+// pmix_data_array_t *darray; // version 2.032
+// void *ptr; // version 2.033
+// pmix_value_from!(sys::pmix_alloc_directive_t, adir, PMIX_ALLOC_DIRECTIVE);
