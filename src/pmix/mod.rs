@@ -3,13 +3,11 @@ use std::ffi::CStr;
 pub mod sys;
 mod value;
 
-use value::Info;
-
 pub fn get_version_str() -> &'static CStr {
     unsafe { CStr::from_ptr(sys::PMIx_Get_version()) }
 }
 
-pub fn server_init(infos: &mut [Info]) {
+pub fn server_init(infos: &mut [sys::pmix_info_t]) {
     let mut module = sys::pmix_server_module_t {
         client_connected: None, // DEPRECATED
         client_finalized: None,
@@ -46,12 +44,6 @@ pub fn server_init(infos: &mut [Info]) {
         /* pending interfaces */
         session_control: None,
     };
-    let status = unsafe {
-        sys::PMIx_server_init(
-            &mut module,
-            infos.as_mut_ptr() as *mut sys::pmix_info_t,
-            infos.len(),
-        )
-    };
+    let status = unsafe { sys::PMIx_server_init(&mut module, infos.as_mut_ptr(), infos.len()) };
     assert_eq!(status, sys::PMIX_SUCCESS as i32);
 }

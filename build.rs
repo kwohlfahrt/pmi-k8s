@@ -20,6 +20,7 @@ fn main() {
                 .iter()
                 .map(|p| format!("-I{}", p.display())),
         )
+        .no_copy("pmix_(info|value)(_t)?")
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()));
 
     let bindings = builder
