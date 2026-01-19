@@ -3,22 +3,46 @@ use std::mem::MaybeUninit;
 
 use super::sys;
 
-impl Drop for sys::pmix_value_t {
+pub struct Value(sys::pmix_value_t);
+
+impl Drop for Value {
     fn drop(&mut self) {
-        unsafe { sys::PMIx_Value_free(self, 1) };
+        unsafe { sys::PMIx_Value_free(&mut self.0, 1) };
+    }
+}
+
+pub struct Info(sys::pmix_info_t);
+
+impl Drop for Info {
+    fn drop(&mut self) {
+        unsafe { sys::PMIx_Info_destruct(&mut self.0) };
     }
 }
 
 macro_rules! pmix_value_from {
     ($t:ty, $variant:ident, $tag:ident) => {
-        impl From<&$t> for sys::pmix_value_t {
+        impl From<&$t> for Value {
             fn from(src: &$t) -> Self {
                 let tag = sys::$tag as u16;
                 let src = src as *const $t as *const c_void;
                 let mut v = MaybeUninit::<Self>::uninit();
                 // PMIx_Value_load copies data out of src
-                let status = unsafe { sys::PMIx_Value_load(v.as_mut_ptr(), src, tag) };
-                assert!(status == sys::PMIX_SUCCESS as i32);
+                let status = unsafe { sys::PMIx_Value_load(&mut (*v.as_mut_ptr()).0, src, tag) };
+                assert_eq!(status, sys::PMIX_SUCCESS as i32);
+                unsafe { v.assume_init() }
+            }
+        }
+
+        impl From<(&CStr, &$t)> for Info {
+            fn from((key, src): (&CStr, &$t)) -> Self {
+                let tag = sys::$tag as u16;
+                let src = src as *const $t as *const c_void;
+                let key = key.as_ptr();
+                let mut v = MaybeUninit::<Self>::uninit();
+                // PMIx_Info_load copies data out of src
+                let status =
+                    unsafe { sys::PMIx_Info_load(&mut (*v.as_mut_ptr()).0, key, src, tag) };
+                assert_eq!(status, sys::PMIX_SUCCESS as i32);
                 unsafe { v.assume_init() }
             }
         }
