@@ -47,3 +47,23 @@ pub fn server_init(infos: &mut [sys::pmix_info_t]) {
     let status = unsafe { sys::PMIx_server_init(&mut module, infos.as_mut_ptr(), infos.len()) };
     assert_eq!(status, sys::PMIX_SUCCESS as i32);
 }
+
+pub fn is_initialized() -> bool {
+    let status = unsafe { sys::PMIx_Initialized() };
+    status != 0
+}
+
+#[cfg(test)]
+mod test {
+    use serial_test::serial;
+
+    use super::*;
+
+    #[test]
+    #[serial(server)]
+    fn test_server_init() {
+        assert!(!is_initialized());
+        server_init(&mut []);
+        assert!(is_initialized());
+    }
+}

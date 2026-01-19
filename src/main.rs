@@ -13,5 +13,6 @@ async fn main() -> Result<(), Error> {
 
     let tool_support = CStr::from_bytes_with_nul(pmix::sys::PMIX_SERVER_TOOL_SUPPORT).unwrap();
     pmix::server_init(&mut [(tool_support, &false).into()]);
+    assert!(pmix::is_initialized());
     Ok(())
 }

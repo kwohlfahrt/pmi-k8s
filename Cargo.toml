@@ -14,3 +14,6 @@ libc = "0.2.180"
 [build-dependencies]
 bindgen = "0.72"
 pkg-config = "0.3"
+
+[dev-dependencies]
+serial_test = "3.3.1"
