@@ -1,6 +1,6 @@
 use anyhow::Error;
 
-mod pmix;
+use mpi_k8s::pmix;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Error> {
@@ -9,7 +9,7 @@ async fn main() -> Result<(), Error> {
 
     println!("{:?}", pmix::get_version_str());
 
-    pmix::server_init(&mut [(pmix::sys::PMIX_SERVER_TOOL_SUPPORT, &false).into()]);
+    pmix::server_init(&[(pmix::sys::PMIX_SERVER_SYSTEM_SUPPORT, &true).into()]);
     assert!(pmix::is_initialized());
     Ok(())
 }

@@ -1,4 +1,4 @@
-use std::ffi::CStr;
+use std::{ffi::CStr, ptr};
 
 pub mod sys;
 mod value;
@@ -7,7 +7,7 @@ pub fn get_version_str() -> &'static CStr {
     unsafe { CStr::from_ptr(sys::PMIx_Get_version()) }
 }
 
-pub fn server_init(infos: &mut [sys::pmix_info_t]) {
+pub fn server_init(infos: &[sys::pmix_info_t]) {
     let mut module = sys::pmix_server_module_t {
         client_connected: None, // DEPRECATED
         client_finalized: None,
@@ -44,7 +44,66 @@ pub fn server_init(infos: &mut [sys::pmix_info_t]) {
         /* pending interfaces */
         session_control: None,
     };
-    let status = unsafe { sys::PMIx_server_init(&mut module, infos.as_mut_ptr(), infos.len()) };
+    let status = unsafe {
+        sys::PMIx_server_init(
+            &mut module,
+            infos.as_ptr() as *mut sys::pmix_info_t,
+            infos.len(),
+        )
+    };
+    assert_eq!(status, sys::PMIX_SUCCESS as i32);
+}
+
+pub fn register_namespace(nspace: &CStr) {
+    let mut infos: [sys::pmix_info_t; _] = [
+        (sys::PMIX_UNIV_SIZE, &1).into(),
+        (sys::PMIX_JOB_SIZE, &1).into(),
+        (sys::PMIX_LOCAL_SIZE, &1).into(),
+    ];
+    let status = unsafe {
+        sys::PMIx_server_register_nspace(
+            nspace.as_ptr(),
+            1,
+            infos.as_mut_ptr(),
+            infos.len(),
+            None,
+            std::ptr::null_mut(),
+        )
+    };
+    assert_eq!(status, sys::PMIX_OPERATION_SUCCEEDED as i32);
+}
+
+pub fn register_client(namespace: &CStr, rank: u32) {
+    let namespace = namespace.to_bytes_with_nul();
+
+    let uid = nix::unistd::geteuid();
+    let gid = nix::unistd::getegid();
+    let mut nspace = [0; _];
+    nspace[..namespace.len()].copy_from_slice(namespace);
+
+    let proc = sys::pmix_proc_t { nspace, rank };
+
+    let status = unsafe {
+        sys::PMIx_server_register_client(
+            &proc,
+            uid.as_raw(),
+            gid.as_raw(),
+            ptr::null_mut(),
+            None,
+            ptr::null_mut(),
+        )
+    };
+    assert_eq!(status, sys::PMIX_OPERATION_SUCCEEDED as i32);
+}
+
+pub fn client_init(infos: &[sys::pmix_info_t]) {
+    let status = unsafe {
+        sys::PMIx_Init(
+            std::ptr::null_mut(),
+            infos.as_ptr() as *mut sys::pmix_info_t,
+            infos.len(),
+        )
+    };
     assert_eq!(status, sys::PMIX_SUCCESS as i32);
 }
 

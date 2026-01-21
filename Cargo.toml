@@ -3,6 +3,9 @@ name = "mpi-k8s"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "mock"
+
 [dependencies]
 kube = { version = "3", features = ["runtime", "derive"] }
 k8s-openapi = { version = "0.27", features = ["v1_35"] }
@@ -10,10 +13,13 @@ tokio = { version = "1", features = ["rt", "macros"] }
 thiserror = "2"
 anyhow = "1"
 libc = "0.2.180"
+nix = { version = "0.31.0", features = ["user"] }
 
 [build-dependencies]
 bindgen = "0.72"
 pkg-config = "0.3"
 
 [dev-dependencies]
+notify = "8.2.0"
 serial_test = "3.3.1"
+tempdir = "0.3.7"
