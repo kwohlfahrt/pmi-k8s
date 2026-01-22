@@ -1,32 +1,43 @@
-use std::{
-    env::set_var,
-    io::BufRead,
-    process::{Command, Stdio},
-};
+use std::{ffi::CString, path::Path, process::Command, sync::Barrier};
 
 use tempdir::TempDir;
 
 use mpi_k8s::pmix;
 
+fn server(namespace: &str, tmpdir: &Path, ready: &Barrier, done: &Barrier) {
+    let tmpdir = CString::new(tmpdir.to_str().unwrap()).unwrap();
+    pmix::server_init(&mut [
+        (pmix::sys::PMIX_SYSTEM_TMPDIR, tmpdir.as_c_str()).into(),
+        (pmix::sys::PMIX_SERVER_SYSTEM_SUPPORT, &true).into(),
+    ]);
+
+    let namespace = &CString::new(namespace).unwrap();
+    pmix::register_namespace(namespace);
+    pmix::register_client(namespace, 0);
+    ready.wait();
+    done.wait();
+}
+
 #[test]
 fn test_client() {
     let d = TempDir::new("test-client").unwrap();
-    let mut p = Command::new(env!("CARGO_BIN_EXE_mock"))
-        .env("TMPDIR", d.path())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let ns = "foo";
+    let ready = Barrier::new(2);
+    let done = Barrier::new(2);
 
-    let stdout = std::io::BufReader::new(p.stdout.as_mut().unwrap());
-    let coord_dir = stdout.lines().next().unwrap().unwrap();
+    std::thread::scope(|s| {
+        let server = s.spawn(|| server(ns, d.path(), &ready, &done));
+        ready.wait();
 
-    unsafe {
-        set_var("PMIX_NAMESPACE", "foo");
-        set_var("PMIX_RANK", "0");
-        set_var("TMPDIR", coord_dir.trim());
-    }
+        let mut p = Command::new(env!("CARGO_BIN_EXE_mock"))
+            .env("TMPDIR", d.path())
+            .env("PMIX_NAMESPACE", ns)
+            .env("PMIX_RANK", "0")
+            .spawn()
+            .unwrap();
+        assert!(p.wait().unwrap().success());
 
-    pmix::client_init(&[]);
-    p.wait().unwrap();
+        done.wait();
+        server.join().unwrap();
+    });
 }
