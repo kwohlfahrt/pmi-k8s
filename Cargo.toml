@@ -20,6 +20,5 @@ bindgen = "0.72"
 pkg-config = "0.3"
 
 [dev-dependencies]
-notify = "8.2.0"
 serial_test = "3.3.1"
 tempdir = "0.3.7"
