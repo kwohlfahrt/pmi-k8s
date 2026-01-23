@@ -47,8 +47,12 @@ impl Client {
     }
 
     pub fn namespace(&self) -> &CStr {
+        let namespace = self.proc.nspace;
+        let namespace =
+            unsafe { std::slice::from_raw_parts(namespace.as_ptr() as *const u8, namespace.len()) };
+
         // PMIx initializes the namespace, so it is guaranteed to be valid
-        CStr::from_bytes_until_nul(&self.proc.nspace).unwrap()
+        CStr::from_bytes_until_nul(namespace).unwrap()
     }
 
     fn get(

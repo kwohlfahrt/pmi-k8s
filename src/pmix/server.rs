@@ -122,6 +122,9 @@ pub struct Client<'a> {
 impl<'a> Client<'a> {
     pub fn register(namespace: &'a Namespace, rank: u32) -> Self {
         let namespace = namespace.nspace.to_bytes_with_nul();
+        let namespace = unsafe {
+            std::slice::from_raw_parts(namespace.as_ptr() as *const libc::c_char, namespace.len())
+        };
 
         let uid = nix::unistd::geteuid();
         let gid = nix::unistd::getegid();
