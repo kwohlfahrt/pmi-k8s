@@ -6,14 +6,15 @@ use mpi_k8s::pmix;
 
 fn server(namespace: &str, tmpdir: &Path, ready: &Barrier, done: &Barrier) {
     let tmpdir = CString::new(tmpdir.to_str().unwrap()).unwrap();
-    pmix::server_init(&mut [
+    let mut s = pmix::server::Server::init(&[
         (pmix::sys::PMIX_SYSTEM_TMPDIR, tmpdir.as_c_str()).into(),
         (pmix::sys::PMIX_SERVER_SYSTEM_SUPPORT, &true).into(),
-    ]);
+    ])
+    .unwrap();
 
     let namespace = &CString::new(namespace).unwrap();
-    pmix::register_namespace(namespace);
-    pmix::register_client(namespace, 0);
+    let mut n = pmix::server::Namespace::register(&mut s, namespace);
+    let _c = pmix::server::Client::register(&mut n, 0);
     ready.wait();
     done.wait();
 }
@@ -35,9 +36,11 @@ fn test_client() {
             .env("PMIX_RANK", "0")
             .spawn()
             .unwrap();
-        assert!(p.wait().unwrap().success());
+        let is_success = p.wait().map(|rc| rc.success());
 
         done.wait();
         server.join().unwrap();
+
+        assert!(is_success.unwrap())
     });
 }

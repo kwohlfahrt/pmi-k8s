@@ -6,8 +6,7 @@ fn main() -> Result<(), Error> {
     // - PMIX_NAMESPACE
     // - PMIX_RANK
     // - TMPDIR
-
-    pmix::client_init(&[]);
+    let _c = pmix::client::Client::init(&[]).unwrap();
     assert!(pmix::is_initialized());
     Ok(())
 }

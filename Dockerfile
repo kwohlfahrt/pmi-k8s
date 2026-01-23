@@ -12,7 +12,7 @@ RUN <<EOF
 set -euo pipefail
 
 ./autogen.pl
-./configure --prefix=/usr/local CFLAGS=-g
+./configure --prefix=/usr/local CFLAGS="-g -O0"
 make -j install
 EOF
 
