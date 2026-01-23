@@ -6,7 +6,12 @@ fn main() -> Result<(), Error> {
     // - PMIX_NAMESPACE
     // - PMIX_RANK
     // - TMPDIR
-    let _c = pmix::client::Client::init(&[]).unwrap();
+    let c = pmix::client::Client::init(&[]).unwrap();
     assert!(pmix::is_initialized());
+    let namespace = c.namespace().to_str().unwrap();
+    assert!(!namespace.starts_with("singleton."));
+    let v = c.get_job(None, pmix::sys::PMIX_JOB_SIZE);
+    assert_eq!(pmix::sys::PMIX_UINT32 as u16, v.type_);
+    assert_eq!(2, unsafe { v.data.uint32 });
     Ok(())
 }

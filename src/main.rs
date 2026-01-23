@@ -1,3 +1,5 @@
+use std::io::Read;
+
 use anyhow::Error;
 
 use mpi_k8s::pmix;
@@ -12,5 +14,7 @@ async fn main() -> Result<(), Error> {
     let infos = [(pmix::sys::PMIX_SERVER_SYSTEM_SUPPORT, &true).into()];
     let _s = pmix::server::Server::init(&infos);
     assert!(pmix::is_initialized());
+
+    let _ = std::io::stdin().read_to_end(&mut Vec::new());
     Ok(())
 }
