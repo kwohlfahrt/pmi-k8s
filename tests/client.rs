@@ -8,7 +8,7 @@ fn server(namespace: &str, tmpdir: &Path, ready: &Barrier, done: &Barrier) {
     let tmpdir = CString::new(tmpdir.to_str().unwrap()).unwrap();
     let mut s = pmix::server::Server::init(&[
         (pmix::sys::PMIX_SYSTEM_TMPDIR, tmpdir.as_c_str()).into(),
-        (pmix::sys::PMIX_SERVER_SYSTEM_SUPPORT, &true).into(),
+        (pmix::sys::PMIX_SERVER_SYSTEM_SUPPORT, true).into(),
     ])
     .unwrap();
 

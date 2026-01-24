@@ -15,28 +15,64 @@ impl Drop for sys::pmix_info_t {
     }
 }
 
+impl From<&CStr> for sys::pmix_value_t {
+    fn from(src: &CStr) -> Self {
+        let tag = sys::PMIX_STRING as u16;
+        let mut v = MaybeUninit::<Self>::uninit();
+        // PMIx_Value_load copies data out of src
+        let status = unsafe {
+            sys::PMIx_Value_load(v.as_mut_ptr(), src as *const CStr as *const c_void, tag)
+        };
+        assert_eq!(status, sys::PMIX_SUCCESS as i32);
+        unsafe { v.assume_init() }
+    }
+}
+
+impl From<(&CStr, &CStr)> for sys::pmix_info_t {
+    fn from((key, src): (&CStr, &CStr)) -> Self {
+        let tag = sys::PMIX_STRING as u16;
+        let key = key.as_ptr();
+        let mut v = MaybeUninit::<Self>::uninit();
+        // PMIx_Info_load copies data out of src
+        let status = unsafe {
+            sys::PMIx_Info_load(
+                v.as_mut_ptr(),
+                key,
+                src as *const CStr as *const c_void,
+                tag,
+            )
+        };
+        assert_eq!(status, sys::PMIX_SUCCESS as i32);
+        unsafe { v.assume_init() }
+    }
+}
+
 macro_rules! pmix_value_from {
     ($t:ty, $variant:ident, $tag:ident) => {
-        impl From<&$t> for sys::pmix_value_t {
-            fn from(src: &$t) -> Self {
+        impl From<$t> for sys::pmix_value_t {
+            fn from(src: $t) -> Self {
+                let src = &src;
                 let tag = sys::$tag as u16;
-                let src = src as *const $t as *const c_void;
                 let mut v = MaybeUninit::<Self>::uninit();
                 // PMIx_Value_load copies data out of src
-                let status = unsafe { sys::PMIx_Value_load(v.as_mut_ptr(), src, tag) };
+                let status = unsafe {
+                    sys::PMIx_Value_load(v.as_mut_ptr(), src as *const $t as *const c_void, tag)
+                };
                 assert_eq!(status, sys::PMIX_SUCCESS as i32);
                 unsafe { v.assume_init() }
             }
         }
 
-        impl From<(&CStr, &$t)> for sys::pmix_info_t {
-            fn from((key, src): (&CStr, &$t)) -> Self {
+        impl From<(&CStr, $t)> for sys::pmix_info_t {
+            fn from((key, src): (&CStr, $t)) -> Self {
                 let tag = sys::$tag as u16;
-                let src = src as *const $t as *const c_void;
+                let src = &src;
                 let key = key.as_ptr();
                 let mut v = MaybeUninit::<Self>::uninit();
                 // PMIx_Info_load copies data out of src
-                let status = unsafe { sys::PMIx_Info_load(v.as_mut_ptr(), key, src, tag) };
+                let status = unsafe {
+                    sys::PMIx_Info_load(v.as_mut_ptr(), key, src as *const $t as *const c_void, tag)
+                };
                 assert_eq!(status, sys::PMIX_SUCCESS as i32);
                 unsafe { v.assume_init() }
             }
@@ -61,7 +97,6 @@ macro_rules! pmix_value_from_newtype {
 
 pmix_value_from!(bool, flag, PMIX_BOOL);
 pmix_value_from_newtype!(u8, Byte, byte, PMIX_BYTE);
-pmix_value_from!(CStr, string, PMIX_STRING);
 pmix_value_from!(usize, size, PMIX_SIZE);
 pmix_value_from_newtype!(libc::pid_t, Pid, pid, PMIX_PID);
 pmix_value_from_newtype!(libc::c_int, Int, pid, PMIX_PID);

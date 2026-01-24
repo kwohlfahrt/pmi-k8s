@@ -81,9 +81,9 @@ impl Client {
 
     pub fn get_session(&self, session: Option<Session>, key: &CStr) -> sys::pmix_value_t {
         let mut infos = Vec::with_capacity(3);
-        infos.push((sys::PMIX_SESSION_INFO, &true).into());
+        infos.push((sys::PMIX_SESSION_INFO, true).into());
         if let Some(Session(id)) = session {
-            infos.push((sys::PMIX_SESSION_ID, &id).into());
+            infos.push((sys::PMIX_SESSION_ID, id).into());
         }
 
         Self::get(None, infos, key)
@@ -91,9 +91,9 @@ impl Client {
 
     pub fn get_job(&self, job: Option<Job>, key: &CStr) -> sys::pmix_value_t {
         let mut infos = Vec::with_capacity(4);
-        infos.push((sys::PMIX_JOB_INFO, &true).into());
+        infos.push((sys::PMIX_JOB_INFO, true).into());
         if let Some(Job(_, Some(Session(id)))) = job {
-            infos.push((sys::PMIX_SESSION_ID, &id).into())
+            infos.push((sys::PMIX_SESSION_ID, id).into())
         }
         if let Some(Job(id, _)) = job {
             infos.push((sys::PMIX_JOBID, id).into())

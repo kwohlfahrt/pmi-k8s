@@ -83,10 +83,10 @@ pub struct Namespace<'a> {
 impl<'a> Namespace<'a> {
     pub fn register(_server: &'a mut Server, namespace: &CStr) -> Self {
         let mut infos: [sys::pmix_info_t; _] = [
-            (sys::PMIX_SESSION_ID, &(42 as u32)).into(),
-            (sys::PMIX_UNIV_SIZE, &(2 as u32)).into(),
+            (sys::PMIX_SESSION_ID, 42 as u32).into(),
+            (sys::PMIX_UNIV_SIZE, 2 as u32).into(),
             (sys::PMIX_JOBID, c"42.1").into(),
-            (sys::PMIX_JOB_SIZE, &(2 as u32)).into(),
+            (sys::PMIX_JOB_SIZE, 2 as u32).into(),
         ];
 
         let namespace = namespace.to_bytes_with_nul();
