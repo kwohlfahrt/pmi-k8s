@@ -76,18 +76,26 @@ impl Drop for Server {
 }
 
 pub struct Namespace<'a> {
-    nspace: &'a CStr,
+    nspace: sys::pmix_nspace_t,
     server: PhantomData<&'a Server>,
 }
 
 impl<'a> Namespace<'a> {
-    pub fn register(_server: &'a mut Server, nspace: &'a CStr) -> Self {
+    pub fn register(_server: &'a mut Server, namespace: &CStr) -> Self {
         let mut infos: [sys::pmix_info_t; _] = [
             (sys::PMIX_SESSION_ID, &(42 as u32)).into(),
             (sys::PMIX_UNIV_SIZE, &(2 as u32)).into(),
             (sys::PMIX_JOBID, c"42.1").into(),
             (sys::PMIX_JOB_SIZE, &(2 as u32)).into(),
         ];
+
+        let namespace = namespace.to_bytes_with_nul();
+        let namespace = unsafe {
+            std::slice::from_raw_parts(namespace.as_ptr() as *const libc::c_char, namespace.len())
+        };
+        let mut nspace: sys::pmix_nspace_t = [0; _];
+        nspace[..namespace.len()].copy_from_slice(namespace);
+
         let status = unsafe {
             sys::PMIx_server_register_nspace(
                 nspace.as_ptr(),
@@ -121,17 +129,13 @@ pub struct Client<'a> {
 
 impl<'a> Client<'a> {
     pub fn register(namespace: &'a Namespace, rank: u32) -> Self {
-        let namespace = namespace.nspace.to_bytes_with_nul();
-        let namespace = unsafe {
-            std::slice::from_raw_parts(namespace.as_ptr() as *const libc::c_char, namespace.len())
-        };
-
         let uid = nix::unistd::geteuid();
         let gid = nix::unistd::getegid();
-        let mut nspace = [0; _];
-        nspace[..namespace.len()].copy_from_slice(namespace);
 
-        let proc = sys::pmix_proc_t { nspace, rank };
+        let proc = sys::pmix_proc_t {
+            nspace: namespace.nspace,
+            rank,
+        };
 
         let status = unsafe {
             sys::PMIx_server_register_client(
