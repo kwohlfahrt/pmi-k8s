@@ -23,7 +23,7 @@ impl From<&CStr> for sys::pmix_value_t {
         let status = unsafe {
             sys::PMIx_Value_load(v.as_mut_ptr(), src as *const CStr as *const c_void, tag)
         };
-        assert_eq!(status, sys::PMIX_SUCCESS as i32);
+        assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
         unsafe { v.assume_init() }
     }
 }
@@ -42,7 +42,7 @@ impl From<(&CStr, &CStr)> for sys::pmix_info_t {
                 tag,
             )
         };
-        assert_eq!(status, sys::PMIX_SUCCESS as i32);
+        assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
         unsafe { v.assume_init() }
     }
 }
@@ -58,7 +58,7 @@ macro_rules! pmix_value_from {
                 let status = unsafe {
                     sys::PMIx_Value_load(v.as_mut_ptr(), src as *const $t as *const c_void, tag)
                 };
-                assert_eq!(status, sys::PMIX_SUCCESS as i32);
+                assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
                 unsafe { v.assume_init() }
             }
         }
@@ -73,7 +73,7 @@ macro_rules! pmix_value_from {
                 let status = unsafe {
                     sys::PMIx_Info_load(v.as_mut_ptr(), key, src as *const $t as *const c_void, tag)
                 };
-                assert_eq!(status, sys::PMIX_SUCCESS as i32);
+                assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
                 unsafe { v.assume_init() }
             }
         }

@@ -33,7 +33,7 @@ impl Client {
                 infos.len(),
             )
         };
-        assert_eq!(status, sys::PMIX_SUCCESS as i32);
+        assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
         let proc = unsafe { proc.assume_init() };
 
         Ok(Self {
@@ -72,7 +72,7 @@ impl Client {
                 val_p.as_mut_ptr(),
             )
         };
-        assert_eq!(status, sys::PMIX_SUCCESS as i32);
+        assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
         let val_p = unsafe { val_p.assume_init() };
         let val = unsafe { val_p.read() };
 

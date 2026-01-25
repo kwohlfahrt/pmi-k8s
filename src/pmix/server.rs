@@ -63,7 +63,7 @@ impl Server {
                 infos.len(),
             )
         };
-        assert_eq!(status, sys::PMIX_SUCCESS as i32);
+        assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
 
         Ok(server)
     }
@@ -72,7 +72,7 @@ impl Server {
 impl Drop for Server {
     fn drop(&mut self) {
         let status = unsafe { sys::PMIx_server_finalize() };
-        assert_eq!(status, sys::PMIX_SUCCESS as i32)
+        assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t)
     }
 }
 
@@ -107,7 +107,7 @@ impl<'a> Namespace<'a> {
                 std::ptr::null_mut(),
             )
         };
-        assert_eq!(status, sys::PMIX_OPERATION_SUCCEEDED as i32);
+        assert_eq!(status, sys::PMIX_OPERATION_SUCCEEDED as sys::pmix_status_t);
         Self {
             nspace,
             server: PhantomData,
@@ -158,7 +158,7 @@ impl<'a> Client<'a> {
     pub fn envs(&self) -> env::EnvVars {
         let mut env = ptr::null_mut();
         let status = unsafe { sys::PMIx_server_setup_fork(&self.proc, &mut env) };
-        assert_eq!(status, sys::PMIX_SUCCESS as i32);
+        assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
         unsafe { env::EnvVars::from_ptr(env) }
     }
 }

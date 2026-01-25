@@ -28,7 +28,7 @@ impl EnvVars {
         for var in vars {
             assert!(var.to_bytes().contains(&b'='));
             let status = unsafe { sys::PMIx_Argv_append_nosize(&mut ptr, var.as_ptr()) };
-            assert_eq!(status, sys::PMIX_SUCCESS as i32);
+            assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
         }
         Self(ptr)
     }
