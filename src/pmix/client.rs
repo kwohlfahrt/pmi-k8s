@@ -75,7 +75,13 @@ impl Client {
         assert_eq!(status, sys::PMIX_SUCCESS as i32);
         let val_p = unsafe { val_p.assume_init() };
         let val = unsafe { val_p.read() };
-        unsafe { libc::free(val_p as *mut libc::c_void) };
+
+        // Mark the source as PMIX_UNDEF, so the data we've moved into val is not free'd.
+        unsafe {
+            (*val_p).type_ = sys::PMIX_UNDEF as u16;
+            sys::PMIx_Value_free(val_p, 1);
+        }
+
         val
     }
 
