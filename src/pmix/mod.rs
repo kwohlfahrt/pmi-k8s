@@ -1,6 +1,7 @@
 use std::ffi::CStr;
 
 pub mod client;
+pub mod env;
 pub mod server;
 pub mod sys;
 mod value;

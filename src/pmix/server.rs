@@ -3,6 +3,7 @@ use std::marker::PhantomData;
 use std::ptr;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
+use super::env;
 use super::sys;
 
 static SERVER_LOCK: Mutex<()> = Mutex::new(());
@@ -152,6 +153,13 @@ impl<'a> Client<'a> {
             proc,
             namespace: PhantomData,
         }
+    }
+
+    pub fn envs(&self) -> env::EnvVars {
+        let mut env = ptr::null_mut();
+        let status = unsafe { sys::PMIx_server_setup_fork(&self.proc, &mut env) };
+        assert_eq!(status, sys::PMIX_SUCCESS as i32);
+        unsafe { env::EnvVars::from_ptr(env) }
     }
 }
 
