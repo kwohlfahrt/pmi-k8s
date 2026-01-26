@@ -20,7 +20,10 @@ pub struct Client {
 pub struct Session(u32);
 
 #[derive(Clone, Copy, Debug)]
-pub struct Job<'a>(&'a CStr, Option<Session>);
+pub struct Job(sys::pmix_nspace_t, Option<Session>);
+
+#[derive(Clone, Copy, Debug)]
+pub struct Proc(u32, Option<Job>);
 
 impl Client {
     pub fn init(infos: &[sys::pmix_info_t]) -> Result<Client, PoisonError<MutexGuard<'_, ()>>> {
@@ -96,18 +99,29 @@ impl Client {
     }
 
     pub fn get_job(&self, job: Option<Job>, key: &CStr) -> sys::pmix_value_t {
-        let mut infos = Vec::with_capacity(4);
+        let mut infos = Vec::with_capacity(3);
         infos.push((sys::PMIX_JOB_INFO, true).into());
         if let Some(Job(_, Some(Session(id)))) = job {
             infos.push((sys::PMIX_SESSION_ID, id).into())
         }
-        if let Some(Job(id, _)) = job {
-            infos.push((sys::PMIX_JOBID, id).into())
+
+        let proc = sys::pmix_proc_t {
+            nspace: job.map_or(self.proc.nspace, |j| j.0),
+            rank: sys::PMIX_RANK_WILDCARD,
+        };
+
+        Self::get(Some(&proc), infos, key)
+    }
+
+    pub fn get_proc(&self, proc: Option<Proc>, key: &CStr) -> sys::pmix_value_t {
+        let mut infos = Vec::with_capacity(2);
+        if let Some(Proc(_, Some(Job(_, Some(Session(id)))))) = proc {
+            infos.push((sys::PMIX_SESSION_ID, id).into())
         }
 
         let proc = sys::pmix_proc_t {
-            rank: sys::PMIX_RANK_WILDCARD,
-            ..self.proc
+            nspace: proc.and_then(|p| p.1).map_or(self.proc.nspace, |j| j.0),
+            rank: proc.map_or(self.proc.rank, |p| p.0),
         };
 
         Self::get(Some(&proc), infos, key)

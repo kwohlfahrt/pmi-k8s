@@ -5,6 +5,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use super::env;
 use super::sys;
+use super::value::Rank;
 
 static SERVER_LOCK: Mutex<()> = Mutex::new(());
 
@@ -83,11 +84,13 @@ pub struct Namespace<'a> {
 
 impl<'a> Namespace<'a> {
     pub fn register(_server: &'a mut Server, namespace: &CStr) -> Self {
+        let proc_infos: [sys::pmix_info_t; _] = [
+            (sys::PMIX_RANK, Rank(0)).into(),
+            (sys::PMIX_LOCAL_RANK, 0 as u16).into(),
+        ];
         let mut infos: [sys::pmix_info_t; _] = [
-            (sys::PMIX_SESSION_ID, 42 as u32).into(),
-            (sys::PMIX_UNIV_SIZE, 2 as u32).into(),
-            (sys::PMIX_JOBID, c"42.1").into(),
-            (sys::PMIX_JOB_SIZE, 2 as u32).into(),
+            (sys::PMIX_JOB_SIZE, 1 as u32).into(),
+            (sys::PMIX_PROC_INFO_ARRAY, proc_infos.as_slice()).into(),
         ];
 
         let namespace = namespace.to_bytes_with_nul();
