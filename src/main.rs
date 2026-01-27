@@ -1,4 +1,4 @@
-use std::io::Read;
+use std::process::Command;
 
 use anyhow::Error;
 
@@ -12,9 +12,20 @@ async fn main() -> Result<(), Error> {
     println!("{:?}", pmix::get_version_str());
 
     let infos = [(pmix::sys::PMIX_SERVER_SYSTEM_SUPPORT, true).into()];
-    let _s = pmix::server::Server::init(&infos);
+    let mut s = pmix::server::Server::init(&infos).unwrap();
     assert!(pmix::is_initialized());
 
-    let _ = std::io::stdin().read_to_end(&mut Vec::new());
+    let mut ns = pmix::server::Namespace::register(&mut s, c"foobar");
+    let c = pmix::server::Client::register(&mut ns, 0);
+
+    let mut args = std::env::args().skip(1);
+    let program = args.next().unwrap();
+    let mut p = Command::new(program)
+        .args(args)
+        .envs(&c.envs())
+        .spawn()
+        .unwrap();
+    assert!(p.wait().unwrap().success());
+
     Ok(())
 }
