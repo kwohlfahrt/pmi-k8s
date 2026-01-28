@@ -35,6 +35,7 @@ fn test_client() {
         let server = s.spawn(|| server(ns, d.path(), tx, &done));
 
         let mut p = Command::new(env!("CARGO_BIN_EXE_mock"))
+            .arg("pmix")
             .envs(&rx.recv().unwrap())
             .spawn()
             .unwrap();

@@ -6,6 +6,7 @@ default-run = "mpi-k8s"
 
 [[bin]]
 name = "mock"
+required-features = ["test-bins"]
 
 [dependencies]
 kube = { version = "3", features = ["runtime", "derive"] }
@@ -15,6 +16,7 @@ thiserror = "2"
 anyhow = "1"
 libc = "0.2.180"
 nix = { version = "0.31.0", features = ["user"] }
+mpi = { version = "0.8.1", optional = true }
 
 [build-dependencies]
 bindgen = "0.72"
@@ -23,3 +25,6 @@ pkg-config = "0.3"
 [dev-dependencies]
 serial_test = "3.3.1"
 tempdir = "0.3.7"
+
+[features]
+test-bins = ["dep:mpi"]
