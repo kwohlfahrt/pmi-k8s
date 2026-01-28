@@ -18,7 +18,7 @@ fn server(namespace: &str, tmpdir: &Path, ready: mpsc::Sender<pmix::env::EnvVars
     .unwrap();
 
     let namespace = &CString::new(namespace).unwrap();
-    let mut n = pmix::server::Namespace::register(&mut s, namespace);
+    let mut n = pmix::server::Namespace::register(&mut s, namespace, 1);
     let c = pmix::server::Client::register(&mut n, 0);
     ready.send(c.envs()).unwrap();
     done.wait();

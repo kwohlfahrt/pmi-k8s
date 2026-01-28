@@ -11,21 +11,28 @@ async fn main() -> Result<(), Error> {
 
     println!("{:?}", pmix::get_version_str());
 
+    let mut args = std::env::args().skip(1);
+    let program = args.next().unwrap();
+    let mut cmd = Command::new(program);
+    let cmd = cmd.args(args);
+
     let infos = [(pmix::sys::PMIX_SERVER_SYSTEM_SUPPORT, true).into()];
     let mut s = pmix::server::Server::init(&infos).unwrap();
     assert!(pmix::is_initialized());
 
-    let mut ns = pmix::server::Namespace::register(&mut s, c"foobar");
-    let c = pmix::server::Client::register(&mut ns, 0);
+    let n = 2;
+    let ns = pmix::server::Namespace::register(&mut s, c"foobar", n);
+    let clients = (0..n)
+        .map(|i| pmix::server::Client::register(&ns, i))
+        .collect::<Vec<_>>();
 
-    let mut args = std::env::args().skip(1);
-    let program = args.next().unwrap();
-    let mut p = Command::new(program)
-        .args(args)
-        .envs(&c.envs())
-        .spawn()
-        .unwrap();
-    assert!(p.wait().unwrap().success());
+    let mut ps = clients
+        .iter()
+        .map(|c| cmd.envs(&c.envs()).spawn().unwrap())
+        .take(2)
+        .collect::<Vec<_>>();
+
+    assert!(ps.iter_mut().all(|p| p.wait().unwrap().success()));
 
     Ok(())
 }

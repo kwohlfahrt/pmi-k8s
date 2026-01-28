@@ -83,16 +83,7 @@ pub struct Namespace<'a> {
 }
 
 impl<'a> Namespace<'a> {
-    pub fn register(_server: &'a mut Server, namespace: &CStr) -> Self {
-        let proc_infos: [sys::pmix_info_t; _] = [
-            (sys::PMIX_RANK, Rank(0)).into(),
-            (sys::PMIX_LOCAL_RANK, 0 as u16).into(),
-        ];
-        let mut infos: [sys::pmix_info_t; _] = [
-            (sys::PMIX_JOB_SIZE, 1 as u32).into(),
-            (sys::PMIX_PROC_INFO_ARRAY, proc_infos.as_slice()).into(),
-        ];
-
+    pub fn register(_server: &'a mut Server, namespace: &CStr, nprocs: u32) -> Self {
         let namespace = namespace.to_bytes_with_nul();
         let namespace = unsafe {
             std::slice::from_raw_parts(namespace.as_ptr() as *const libc::c_char, namespace.len())
@@ -100,10 +91,25 @@ impl<'a> Namespace<'a> {
         let mut nspace: sys::pmix_nspace_t = [0; _];
         nspace[..namespace.len()].copy_from_slice(namespace);
 
+        let global_infos = [(sys::PMIX_JOB_SIZE, nprocs).into()];
+        let proc_infos = (0..nprocs)
+            .map(|i| {
+                [
+                    (sys::PMIX_RANK, Rank(i)).into(),
+                    (sys::PMIX_LOCAL_RANK, i as u16).into(),
+                ]
+            })
+            .map(|infos| (sys::PMIX_PROC_INFO_ARRAY, infos.as_slice()).into());
+
+        let mut infos = global_infos
+            .into_iter()
+            .chain(proc_infos)
+            .collect::<Vec<_>>();
+
         let status = unsafe {
             sys::PMIx_server_register_nspace(
                 nspace.as_ptr(),
-                1,
+                nprocs as i32,
                 infos.as_mut_ptr(),
                 infos.len(),
                 None,
