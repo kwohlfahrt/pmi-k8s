@@ -83,7 +83,12 @@ pub struct Namespace<'a> {
 }
 
 impl<'a> Namespace<'a> {
-    pub fn register(_server: &'a mut Server, namespace: &CStr, nprocs: u32) -> Self {
+    pub fn register(
+        _server: &'a mut Server,
+        namespace: &CStr,
+        nlocalprocs: u32,
+        nprocs: u32,
+    ) -> Self {
         let namespace = namespace.to_bytes_with_nul();
         let namespace = unsafe {
             std::slice::from_raw_parts(namespace.as_ptr() as *const libc::c_char, namespace.len())
@@ -92,7 +97,7 @@ impl<'a> Namespace<'a> {
         nspace[..namespace.len()].copy_from_slice(namespace);
 
         let global_infos = [(sys::PMIX_JOB_SIZE, nprocs).into()];
-        let proc_infos = (0..nprocs)
+        let proc_infos = (0..nlocalprocs)
             .map(|i| {
                 [
                     (sys::PMIX_RANK, Rank(i)).into(),
@@ -109,7 +114,7 @@ impl<'a> Namespace<'a> {
         let status = unsafe {
             sys::PMIx_server_register_nspace(
                 nspace.as_ptr(),
-                nprocs as i32,
+                nlocalprocs as i32,
                 infos.as_mut_ptr(),
                 infos.len(),
                 None,

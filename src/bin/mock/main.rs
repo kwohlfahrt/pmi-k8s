@@ -3,16 +3,19 @@ use mpi::traits::{Communicator, CommunicatorCollectives};
 
 use mpi_k8s::pmix;
 
-fn mpi() -> Result<(), Error> {
+mod server;
+use crate::server::{server, servers};
+
+fn mpi(expected_size: i32) -> Result<(), Error> {
     let universe = mpi::initialize().unwrap();
     let world = universe.world();
     let size = world.size();
-    assert_eq!(size, 2);
+    assert_eq!(size, expected_size);
 
     let rank = world.rank();
-    let mut recv = [0, size];
+    let mut recv = std::iter::repeat_n(0, size as usize).collect::<Vec<_>>();
     world.all_gather_into(&[rank], &mut recv);
-    assert_eq!(recv, [0, 1]);
+    assert_eq!(recv, (0..size).collect::<Vec<i32>>());
     Ok(())
 }
 
@@ -36,10 +39,21 @@ fn pmix() -> Result<(), Error> {
 }
 
 fn main() -> Result<(), Error> {
-    let mut args = std::env::args().skip(1);
-    match args.next().unwrap().as_str() {
-        "pmix" => pmix(),
-        "mpi" => mpi(),
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    let args = args.iter().map(|s| s.as_str()).collect::<Vec<_>>();
+    // TODO: Proper argument parsing
+    match args.as_slice() {
+        ["client", "pmix", _] => pmix(),
+        ["client", "mpi", size] => mpi(size.parse().unwrap()),
+        ["servers", cmd, nnodes, nprocs] => {
+            servers(cmd, nnodes.parse().unwrap(), nprocs.parse().unwrap())
+        }
+        ["server", cmd, nnodes, nprocs, node_rank] => server(
+            cmd,
+            nnodes.parse().unwrap(),
+            nprocs.parse().unwrap(),
+            node_rank.parse().unwrap(),
+        ),
         _ => unimplemented!(),
     }
 }

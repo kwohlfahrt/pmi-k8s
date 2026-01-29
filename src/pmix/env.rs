@@ -2,6 +2,7 @@
 use std::ffi::CString;
 use std::{
     ffi::{CStr, OsStr},
+    fmt::Debug,
     marker::PhantomData,
     os::unix::ffi::OsStrExt,
 };
@@ -31,6 +32,12 @@ impl EnvVars {
             assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
         }
         Self(ptr)
+    }
+}
+
+impl Debug for EnvVars {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self).finish()
     }
 }
 
