@@ -23,13 +23,7 @@ fn spawn_client(
 pub(crate) fn server(cmd: &str, nnodes: u32, nprocs: u32, node_rank: u32) -> Result<(), Error> {
     let tmpdir = TempDir::new("pmix-server").unwrap();
     let namespace = "foo";
-    let tmpdir = CString::new(tmpdir.path().as_os_str().as_encoded_bytes()).unwrap();
-    let mut s = pmix::server::Server::init(&[
-        (pmix::sys::PMIX_SERVER_TMPDIR, tmpdir.as_c_str()).into(),
-        (pmix::sys::PMIX_SYSTEM_TMPDIR, tmpdir.as_c_str()).into(),
-        (pmix::sys::PMIX_SERVER_SYSTEM_SUPPORT, true).into(),
-    ])
-    .unwrap();
+    let mut s = pmix::server::Server::init(tmpdir.path()).unwrap();
 
     let namespace = &CString::new(namespace).unwrap();
     let n = pmix::server::Namespace::register(&mut s, namespace, nprocs, nprocs * nnodes);

@@ -3,6 +3,7 @@ use std::process::Command;
 use anyhow::Error;
 
 use mpi_k8s::pmix;
+use tempdir::TempDir;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Error> {
@@ -16,8 +17,8 @@ async fn main() -> Result<(), Error> {
     let mut cmd = Command::new(program);
     let cmd = cmd.args(args);
 
-    let infos = [(pmix::sys::PMIX_SERVER_SYSTEM_SUPPORT, true).into()];
-    let mut s = pmix::server::Server::init(&infos).unwrap();
+    let tmpdir = TempDir::new("pmix-k8s").unwrap();
+    let mut s = pmix::server::Server::init(tmpdir.path()).unwrap();
     assert!(pmix::is_initialized());
 
     let n = 2;

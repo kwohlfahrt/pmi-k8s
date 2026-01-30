@@ -1,5 +1,7 @@
 use std::ffi::CStr;
+use std::ffi::CString;
 use std::marker::PhantomData;
+use std::path::Path;
 use std::ptr;
 use std::sync::mpsc;
 
@@ -8,7 +10,8 @@ use super::globals;
 use super::sys;
 use super::value::Rank;
 
-pub struct Server {
+pub struct Server<'a> {
+    _tmpdir: &'a Path,
     _rx: mpsc::Receiver<globals::Event>,
     // I'm not sure what PMIx functions are thread-safe, so mark the server as
     // !Sync. Server::init enforces that only one is live at a time.
@@ -115,8 +118,15 @@ unsafe extern "C" fn query(
     sys::PMIX_ERR_NOT_SUPPORTED as sys::pmix_status_t
 }
 
-impl Server {
-    pub fn init(infos: &[sys::pmix_info_t]) -> Result<Self, globals::AlreadyInitialized> {
+impl<'a> Server<'a> {
+    pub fn init(tmpdir: &'a Path) -> Result<Self, globals::AlreadyInitialized> {
+        let dirname = CString::new(tmpdir.as_os_str().as_encoded_bytes()).unwrap();
+        let infos: [sys::pmix_info_t; _] = [
+            (sys::PMIX_SERVER_TMPDIR, dirname.as_c_str()).into(),
+            (sys::PMIX_SYSTEM_TMPDIR, dirname.as_c_str()).into(),
+            (sys::PMIX_SERVER_SYSTEM_SUPPORT, true).into(),
+        ];
+
         let mut module = sys::pmix_server_module_t {
             client_connected: None, // DEPRECATED
             client_finalized: None,
@@ -160,25 +170,21 @@ impl Server {
             return Err(globals::AlreadyInitialized());
         }
         let (tx, rx) = mpsc::channel();
-        let status = unsafe {
-            sys::PMIx_server_init(
-                &mut module,
-                infos.as_ptr() as *mut sys::pmix_info_t,
-                infos.len(),
-            )
-        };
+        let status =
+            unsafe { sys::PMIx_server_init(&mut module, infos.as_ptr() as *mut _, infos.len()) };
         // FIXME: Don't poison the lock on failure
         assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
         *guard = Some(globals::State::Server(tx));
 
         Ok(Self {
+            _tmpdir: tmpdir,
             _rx: rx,
             _marker: globals::Unsync(PhantomData),
         })
     }
 }
 
-impl Drop for Server {
+impl<'a> Drop for Server<'a> {
     fn drop(&mut self) {
         let mut guard = globals::PMIX_STATE.write().unwrap();
         drop(guard.take());
@@ -189,7 +195,7 @@ impl Drop for Server {
 
 pub struct Namespace<'a> {
     nspace: sys::pmix_nspace_t,
-    server: PhantomData<&'a Server>,
+    server: PhantomData<&'a Server<'a>>,
 }
 
 impl<'a> Namespace<'a> {
@@ -298,6 +304,7 @@ impl<'a> Drop for Client<'a> {
 #[cfg(test)]
 mod test {
     use serial_test::serial;
+    use tempdir::TempDir;
 
     use super::super::is_initialized;
     use super::*;
@@ -307,7 +314,8 @@ mod test {
     fn test_server_init() {
         assert!(!is_initialized());
         {
-            let _s = Server::init(&mut []).unwrap();
+            let tempdir = TempDir::new("server").unwrap();
+            let _s = Server::init(tempdir.path()).unwrap();
             assert!(is_initialized());
         }
         assert!(!is_initialized());
