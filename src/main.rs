@@ -18,13 +18,13 @@ async fn main() -> Result<(), Error> {
     let cmd = cmd.args(args);
 
     let tmpdir = TempDir::new("pmix-k8s").unwrap();
-    let mut s = pmix::server::Server::init(tmpdir.path()).unwrap();
+    let mut s = pmix::server::Server::init(tmpdir.path(), 1, 1).unwrap();
     assert!(pmix::is_initialized());
 
     let n = 2;
-    let ns = pmix::server::Namespace::register(&mut s, c"foobar", n, n);
+    let ns = pmix::server::Namespace::register(&mut s, c"foobar", n, n as u32);
     let clients = (0..n)
-        .map(|i| pmix::server::Client::register(&ns, i))
+        .map(|i| pmix::server::Client::register(&ns, i as u32))
         .collect::<Vec<_>>();
 
     let mut ps = clients

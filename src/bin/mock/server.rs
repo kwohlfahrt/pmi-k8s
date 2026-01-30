@@ -8,26 +8,26 @@ use mpi_k8s::pmix;
 fn spawn_client(
     subcommand: &str,
     nnodes: u32,
-    nprocs: u32,
+    nprocs: u16,
     c: &pmix::server::Client,
 ) -> std::process::Child {
     let mut cmd = Command::new(std::env::current_exe().unwrap());
     cmd.arg("client")
         .arg(subcommand)
-        .arg((nnodes * nprocs).to_string())
+        .arg((nnodes * nprocs as u32).to_string())
         .envs(&c.envs())
         .spawn()
         .unwrap()
 }
 
-pub(crate) fn server(cmd: &str, nnodes: u32, nprocs: u32, node_rank: u32) -> Result<(), Error> {
+pub(crate) fn server(cmd: &str, nnodes: u32, nprocs: u16, node_rank: u32) -> Result<(), Error> {
     let tmpdir = TempDir::new("pmix-server").unwrap();
     let namespace = "foo";
-    let mut s = pmix::server::Server::init(tmpdir.path()).unwrap();
+    let mut s = pmix::server::Server::init(tmpdir.path(), nnodes as u32, node_rank as u32).unwrap();
 
     let namespace = &CString::new(namespace).unwrap();
-    let n = pmix::server::Namespace::register(&mut s, namespace, nprocs, nprocs * nnodes);
-    let clients = ((node_rank * nprocs)..((node_rank + 1) * nprocs))
+    let n = pmix::server::Namespace::register(&mut s, namespace, nprocs, nprocs as u32 * nnodes);
+    let clients = ((node_rank * nprocs as u32)..((node_rank + 1) * nprocs as u32))
         .into_iter()
         .map(|i| pmix::server::Client::register(&n, i))
         .collect::<Vec<_>>();

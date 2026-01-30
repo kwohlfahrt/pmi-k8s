@@ -10,16 +10,23 @@ use super::globals;
 use super::sys;
 use super::value::Rank;
 
+#[allow(unused)]
 pub struct Server<'a> {
-    _tmpdir: &'a Path,
-    _rx: mpsc::Receiver<globals::Event>,
+    nnodes: u32,
+    rank: u32,
+    tmpdir: &'a Path,
+    rx: mpsc::Receiver<globals::Event>,
     // I'm not sure what PMIx functions are thread-safe, so mark the server as
     // !Sync. Server::init enforces that only one is live at a time.
     _marker: globals::Unsync,
 }
 
 impl<'a> Server<'a> {
-    pub fn init(tmpdir: &'a Path) -> Result<Self, globals::AlreadyInitialized> {
+    pub fn init(
+        tmpdir: &'a Path,
+        nnodes: u32,
+        rank: u32,
+    ) -> Result<Self, globals::AlreadyInitialized> {
         let dirname = CString::new(tmpdir.as_os_str().as_encoded_bytes()).unwrap();
         let infos: [sys::pmix_info_t; _] = [
             (sys::PMIX_SERVER_TMPDIR, dirname.as_c_str()).into(),
@@ -41,8 +48,10 @@ impl<'a> Server<'a> {
         *guard = Some(globals::State::Server(tx));
 
         Ok(Self {
-            _tmpdir: tmpdir,
-            _rx: rx,
+            nnodes,
+            rank,
+            tmpdir,
+            rx,
             _marker: globals::Unsync(PhantomData),
         })
     }
@@ -63,10 +72,11 @@ pub struct Namespace<'a> {
 }
 
 impl<'a> Namespace<'a> {
+    // TODO: This should be a method on Server
     pub fn register(
-        _server: &'a mut Server,
+        server: &'a mut Server,
         namespace: &CStr,
-        nlocalprocs: u32,
+        nlocalprocs: u16,
         nprocs: u32,
     ) -> Self {
         let namespace = namespace.to_bytes_with_nul();
@@ -79,8 +89,9 @@ impl<'a> Namespace<'a> {
         let global_infos = [(sys::PMIX_JOB_SIZE, nprocs).into()];
         let proc_infos = (0..nlocalprocs)
             .map(|i| {
+                let rank = Rank((nlocalprocs as u32 * server.rank) + i as u32);
                 [
-                    (sys::PMIX_RANK, Rank(i)).into(),
+                    (sys::PMIX_RANK, rank).into(),
                     (sys::PMIX_LOCAL_RANK, i as u16).into(),
                 ]
             })
@@ -179,7 +190,7 @@ mod test {
         assert!(!is_initialized());
         {
             let tempdir = TempDir::new("server").unwrap();
-            let _s = Server::init(tempdir.path()).unwrap();
+            let _s = Server::init(tempdir.path(), 1, 0).unwrap();
             assert!(is_initialized());
         }
         assert!(!is_initialized());
