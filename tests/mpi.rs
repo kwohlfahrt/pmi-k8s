@@ -4,6 +4,6 @@ use std::process::Command;
 fn test_mpi() {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_mock"));
     // TODO: Change nnodes to >= 2
-    let mut p = cmd.args(["servers", "mpi", "1", "2"]).spawn().unwrap();
+    let mut p = cmd.args(["servers", "mpi", "2", "2"]).spawn().unwrap();
     assert!(p.wait().unwrap().success())
 }

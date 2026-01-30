@@ -1,19 +1,14 @@
-use std::{
-    ffi::CStr,
-    mem::MaybeUninit,
-    ptr,
-    sync::{Mutex, MutexGuard, PoisonError},
-};
+use std::marker::PhantomData;
+use std::{ffi::CStr, mem::MaybeUninit, ptr};
 
+use super::globals;
 use super::sys;
 
-static CLIENT_LOCK: Mutex<()> = Mutex::new(());
-
 pub struct Client {
-    // I'm not sure what PMIx client functions are thread-safe, so just lock the
-    // whole thing for now.
-    _guard: MutexGuard<'static, ()>,
     proc: sys::pmix_proc_t,
+    // I'm not sure what PMIx functions are thread-safe, so mark the client as
+    // !Sync. Client::init enforces that only one is live at a time.
+    _marker: globals::Unsync,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -26,8 +21,12 @@ pub struct Job(sys::pmix_nspace_t, Option<Session>);
 pub struct Proc(u32, Option<Job>);
 
 impl Client {
-    pub fn init(infos: &[sys::pmix_info_t]) -> Result<Client, PoisonError<MutexGuard<'_, ()>>> {
-        let guard = CLIENT_LOCK.lock()?;
+    pub fn init(infos: &[sys::pmix_info_t]) -> Result<Client, globals::AlreadyInitialized> {
+        let mut guard = globals::PMIX_STATE.write().unwrap();
+        if guard.is_some() {
+            return Err(globals::AlreadyInitialized());
+        }
+
         let mut proc = MaybeUninit::<sys::pmix_proc_t>::uninit();
         let status = unsafe {
             sys::PMIx_Init(
@@ -36,12 +35,14 @@ impl Client {
                 infos.len(),
             )
         };
+        // FIXME: Don't poison the mutes on init error
         assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
         let proc = unsafe { proc.assume_init() };
+        *guard = Some(globals::State::Client);
 
         Ok(Self {
-            _guard: guard,
             proc,
+            _marker: globals::Unsync(PhantomData),
         })
     }
 
