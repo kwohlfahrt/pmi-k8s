@@ -9,7 +9,7 @@ name = "mock"
 required-features = ["test-bins"]
 
 [dependencies]
-tempdir = { version = "0.3.7", optional = true }
+tempdir = { version = "0.3.7" }
 kube = { version = "3", features = ["runtime", "derive"] }
 k8s-openapi = { version = "0.27", features = ["v1_35"] }
 tokio = { version = "1", features = ["rt", "macros"] }
@@ -27,4 +27,4 @@ pkg-config = "0.3"
 serial_test = "3.3.1"
 
 [features]
-test-bins = ["dep:mpi", "dep:tempdir"]
+test-bins = ["dep:mpi"]

@@ -1,6 +1,7 @@
 use std::{
     ffi,
     marker::PhantomData,
+    slice,
     sync::{RwLock, mpsc},
 };
 use thiserror::Error;
@@ -9,6 +10,7 @@ use super::sys;
 
 pub enum Event {
     Fence {
+        procs: Vec<sys::pmix_proc_t>,
         data: (*mut ffi::c_char, usize),
         cb: (sys::pmix_modex_cbfunc_t, *mut ffi::c_void),
     },
@@ -30,6 +32,11 @@ pub struct AlreadyInitialized();
 pub struct Unsync(pub PhantomData<*const ()>);
 unsafe impl Send for Unsync {}
 
+pub unsafe extern "C" fn release_vec_u8(cbdata: *mut ffi::c_void) {
+    let data = unsafe { Box::from_raw(cbdata as *mut Vec<u8>) };
+    drop(data)
+}
+
 /* For callbacks, one must either:
  * 1. Return PMIX_OPERATION_SUCCEEDED
  * 2. Call return PMIX_SUCCESS, then call cbfunc(PMIX_SUCCESS, cbdata)
@@ -48,7 +55,7 @@ unsafe extern "C" fn client_connected(
 }
 
 unsafe extern "C" fn fence_nb(
-    _procs: *const sys::pmix_proc_t,
+    procs: *const sys::pmix_proc_t,
     nprocs: usize,
     info: *const sys::pmix_info_t,
     ninfo: usize,
@@ -65,8 +72,8 @@ unsafe extern "C" fn fence_nb(
         })
         .count();
     println!(
-        "fence_nb called: nprocs={} ninfo={} ({}) ndata={}",
-        nprocs, ninfo, ninfo_reqd, ndata
+        "fence_nb called: nprocs={} ninfo={} ({}) ndata={} cb={:?}",
+        nprocs, ninfo, ninfo_reqd, ndata, cbfunc
     );
     if ninfo_reqd > 0 {
         return sys::PMIX_ERR_NOT_SUPPORTED;
@@ -74,11 +81,13 @@ unsafe extern "C" fn fence_nb(
     let guard = PMIX_STATE.read().unwrap();
 
     if let Some(State::Server(ref s)) = *guard {
+        // At least one proc must be participating in the fence, so procs must be valid
+        let procs = unsafe { slice::from_raw_parts(procs, nprocs) }.into();
         let cb = (cbfunc, cbdata);
         let data = (data, ndata);
         // mpsc::Sender only fails to send if the receiver is dropped. This only
         // happens in Server::drop, which also clears PMIX_STATE state.
-        s.send(Event::Fence { data, cb }).unwrap();
+        s.send(Event::Fence { procs, data, cb }).unwrap();
         sys::PMIX_SUCCESS as sys::pmix_status_t
     } else {
         sys::PMIX_ERR_INIT as sys::pmix_status_t

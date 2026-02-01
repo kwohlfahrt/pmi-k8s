@@ -1,33 +1,32 @@
-use std::ffi::CStr;
-use std::ffi::CString;
+use std::ffi;
 use std::marker::PhantomData;
-use std::path::Path;
 use std::ptr;
+use std::slice;
 use std::sync::mpsc;
+use std::sync::mpsc::RecvTimeoutError;
+use std::time::Duration;
 
+use tempdir::TempDir;
+
+use super::super::fence;
 use super::env;
 use super::globals;
 use super::sys;
 use super::value::Rank;
 
-#[allow(unused)]
 pub struct Server<'a> {
-    nnodes: u32,
-    rank: u32,
-    tmpdir: &'a Path,
+    fence: fence::FileFence<'a>,
     rx: mpsc::Receiver<globals::Event>,
+    _tmpdir: TempDir,
     // I'm not sure what PMIx functions are thread-safe, so mark the server as
     // !Sync. Server::init enforces that only one is live at a time.
     _marker: globals::Unsync,
 }
 
 impl<'a> Server<'a> {
-    pub fn init(
-        tmpdir: &'a Path,
-        nnodes: u32,
-        rank: u32,
-    ) -> Result<Self, globals::AlreadyInitialized> {
-        let dirname = CString::new(tmpdir.as_os_str().as_encoded_bytes()).unwrap();
+    pub fn init(fence: fence::FileFence<'a>) -> Result<Self, globals::AlreadyInitialized> {
+        let tmpdir = TempDir::new("pmix-server").unwrap();
+        let dirname = ffi::CString::new(tmpdir.path().as_os_str().as_encoded_bytes()).unwrap();
         let infos: [sys::pmix_info_t; _] = [
             (sys::PMIX_SERVER_TMPDIR, dirname.as_c_str()).into(),
             (sys::PMIX_SYSTEM_TMPDIR, dirname.as_c_str()).into(),
@@ -48,12 +47,43 @@ impl<'a> Server<'a> {
         *guard = Some(globals::State::Server(tx));
 
         Ok(Self {
-            nnodes,
-            rank,
-            tmpdir,
+            fence,
             rx,
+            _tmpdir: tmpdir,
             _marker: globals::Unsync(PhantomData),
         })
+    }
+
+    pub fn handle_event(&self, timeout: Duration) {
+        // mpsc::Receiver only fails if all senders are dropped, which only
+        // happens during our own drop.
+        match self.rx.recv_timeout(timeout) {
+            Ok(globals::Event::Fence {
+                procs: _procs,
+                data,
+                cb: (Some(cbfunc), cbdata),
+            }) => {
+                let data = if !data.0.is_null() {
+                    unsafe { slice::from_raw_parts(data.0, data.1) }
+                } else {
+                    &[]
+                };
+
+                let data = self.fence.fence(data);
+                unsafe {
+                    cbfunc(
+                        sys::PMIX_SUCCESS as i32,
+                        data.as_ptr(),
+                        data.len(),
+                        cbdata,
+                        Some(globals::release_vec_u8),
+                        Box::into_raw(data) as *mut ffi::c_void,
+                    )
+                };
+            }
+            Err(RecvTimeoutError::Timeout) => (),
+            _ => unimplemented!(),
+        }
     }
 }
 
@@ -74,8 +104,9 @@ pub struct Namespace<'a> {
 impl<'a> Namespace<'a> {
     // TODO: This should be a method on Server
     pub fn register(
-        server: &'a mut Server,
-        namespace: &CStr,
+        _server: &'a Server,
+        namespace: &ffi::CStr,
+        rank: u32,
         nlocalprocs: u16,
         nprocs: u32,
     ) -> Self {
@@ -89,7 +120,7 @@ impl<'a> Namespace<'a> {
         let global_infos = [(sys::PMIX_JOB_SIZE, nprocs).into()];
         let proc_infos = (0..nlocalprocs)
             .map(|i| {
-                let rank = Rank((nlocalprocs as u32 * server.rank) + i as u32);
+                let rank = Rank((nlocalprocs as u32 * rank) + i as u32);
                 [
                     (sys::PMIX_RANK, rank).into(),
                     (sys::PMIX_LOCAL_RANK, i as u16).into(),
@@ -190,7 +221,8 @@ mod test {
         assert!(!is_initialized());
         {
             let tempdir = TempDir::new("server").unwrap();
-            let _s = Server::init(tempdir.path(), 1, 0).unwrap();
+            let fence = fence::FileFence::new(tempdir.path(), 1, 0);
+            let _s = Server::init(fence).unwrap();
             assert!(is_initialized());
         }
         assert!(!is_initialized());

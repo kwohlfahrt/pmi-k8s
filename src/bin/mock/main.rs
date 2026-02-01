@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use anyhow::Error;
 use mpi::traits::{Communicator, CommunicatorCollectives};
 
@@ -48,8 +50,9 @@ fn main() -> Result<(), Error> {
         ["servers", cmd, nnodes, nprocs] => {
             servers(cmd, nnodes.parse().unwrap(), nprocs.parse().unwrap())
         }
-        ["server", cmd, nnodes, nprocs, node_rank] => server(
+        ["server", cmd, tmpdir, nnodes, nprocs, node_rank] => server(
             cmd,
+            Path::new(tmpdir),
             nnodes.parse().unwrap(),
             nprocs.parse().unwrap(),
             node_rank.parse().unwrap(),

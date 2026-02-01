@@ -2,7 +2,7 @@ use std::process::Command;
 
 use anyhow::Error;
 
-use mpi_k8s::pmix;
+use mpi_k8s::{fence::FileFence, pmix};
 use tempdir::TempDir;
 
 #[tokio::main(flavor = "current_thread")]
@@ -18,11 +18,12 @@ async fn main() -> Result<(), Error> {
     let cmd = cmd.args(args);
 
     let tmpdir = TempDir::new("pmix-k8s").unwrap();
-    let mut s = pmix::server::Server::init(tmpdir.path(), 1, 1).unwrap();
+    let fence = FileFence::new(tmpdir.path(), 1, 0);
+    let mut s = pmix::server::Server::init(fence).unwrap();
     assert!(pmix::is_initialized());
 
     let n = 2;
-    let ns = pmix::server::Namespace::register(&mut s, c"foobar", n, n as u32);
+    let ns = pmix::server::Namespace::register(&mut s, c"foobar", 0, n, n as u32);
     let clients = (0..n)
         .map(|i| pmix::server::Client::register(&ns, i as u32))
         .collect::<Vec<_>>();
