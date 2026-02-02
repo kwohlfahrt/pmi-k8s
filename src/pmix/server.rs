@@ -7,11 +7,12 @@ use std::time::Duration;
 
 use tempdir::TempDir;
 
-use super::super::fence;
+use super::super::{fence, modex};
 use super::{env, globals, sys, value::Rank};
 
 pub struct Server<'a> {
     fence: fence::FileFence<'a>,
+    modex: modex::FileModex<'a>,
     rx: mpsc::Receiver<globals::Event>,
     _tmpdir: TempDir,
     // I'm not sure what PMIx functions are thread-safe, so mark the server as
@@ -20,7 +21,10 @@ pub struct Server<'a> {
 }
 
 impl<'a> Server<'a> {
-    pub fn init(fence: fence::FileFence<'a>) -> Result<Self, globals::AlreadyInitialized> {
+    pub fn init(
+        fence: fence::FileFence<'a>,
+        modex: modex::FileModex<'a>,
+    ) -> Result<Self, globals::AlreadyInitialized> {
         let tmpdir = TempDir::new("pmix-server").unwrap();
         let dirname = ffi::CString::new(tmpdir.path().as_os_str().as_encoded_bytes()).unwrap();
         let infos: [sys::pmix_info_t; _] = [
@@ -44,6 +48,7 @@ impl<'a> Server<'a> {
 
         Ok(Self {
             fence,
+            modex,
             rx,
             _tmpdir: tmpdir,
             _marker: globals::Unsync(PhantomData),
@@ -52,10 +57,17 @@ impl<'a> Server<'a> {
 
     pub fn handle_event(&self, timeout: Duration) {
         self.fence.handle_files();
+        self.modex.handle_files();
         // mpsc::Receiver only fails if all senders are dropped, which only
         // happens during our own drop.
         match self.rx.recv_timeout(timeout) {
             Ok(globals::Event::Fence { procs, data, cb }) => self.fence.submit(procs, data, cb),
+            Ok(globals::Event::DirectModex { proc, cb }) => self.modex.request(proc, cb),
+            Ok(globals::Event::DirectModexResponse {
+                node_rank,
+                proc,
+                data,
+            }) => self.modex.handle_response(node_rank, proc, data),
             Err(RecvTimeoutError::Timeout) => (),
             _ => unimplemented!(),
         }
@@ -213,7 +225,8 @@ mod test {
         {
             let tempdir = TempDir::new("server").unwrap();
             let fence = fence::FileFence::new(tempdir.path(), 1, 0);
-            let _s = Server::init(fence).unwrap();
+            let modex = modex::FileModex::new(tempdir.path(), 1, 0);
+            let _s = Server::init(fence, modex).unwrap();
             assert!(is_initialized());
         }
         assert!(!is_initialized());

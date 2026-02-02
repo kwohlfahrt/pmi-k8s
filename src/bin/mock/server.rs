@@ -3,7 +3,7 @@ use tempdir::TempDir;
 
 use anyhow::Error;
 
-use mpi_k8s::{fence::FileFence, pmix};
+use mpi_k8s::{fence::FileFence, modex::FileModex, pmix};
 
 fn spawn_client(
     subcommand: &str,
@@ -16,6 +16,7 @@ fn spawn_client(
         .arg(subcommand)
         .arg((nnodes * nprocs as u32).to_string())
         .envs(&c.envs())
+        .env("OMPI_MCA_pmix_base_async_modex", "1")
         .spawn()
         .unwrap()
 }
@@ -33,7 +34,8 @@ pub(crate) fn server(
         .collect::<Vec<_>>();
     let hostnames = hostnames.iter().map(|h| h.as_c_str()).collect::<Vec<_>>();
     let fence = FileFence::new(tmpdir, nnodes, node_rank);
-    let s = pmix::server::Server::init(fence).unwrap();
+    let modex = FileModex::new(tmpdir, node_rank, nprocs);
+    let s = pmix::server::Server::init(fence, modex).unwrap();
 
     let namespace = &CString::new(namespace).unwrap();
     let n = pmix::server::Namespace::register(&s, namespace, &hostnames, nprocs);

@@ -17,6 +17,15 @@ pub enum Event {
         data: CData,
         cb: ModexCallback,
     },
+    DirectModex {
+        proc: sys::pmix_proc_t,
+        cb: (sys::pmix_modex_cbfunc_t, *mut ffi::c_void),
+    },
+    DirectModexResponse {
+        node_rank: u32,
+        proc: sys::pmix_proc_t,
+        data: Vec<u8>,
+    },
 }
 
 unsafe impl Send for Event {}
@@ -98,14 +107,35 @@ unsafe extern "C" fn fence_nb(
 }
 
 unsafe extern "C" fn direct_modex(
-    _proc_: *const sys::pmix_proc_t,
-    _info: *const sys::pmix_info_t,
-    _ninfo: usize,
-    _cbfunc: sys::pmix_modex_cbfunc_t,
-    _cbdata: *mut std::ffi::c_void,
+    proc: *const sys::pmix_proc_t,
+    info: *const sys::pmix_info_t,
+    ninfo: usize,
+    cbfunc: sys::pmix_modex_cbfunc_t,
+    cbdata: *mut std::ffi::c_void,
 ) -> sys::pmix_status_t {
-    println!("direct_modex called");
-    sys::PMIX_ERR_NOT_SUPPORTED as sys::pmix_status_t
+    let info = unsafe { std::slice::from_raw_parts(info, ninfo) };
+    let ninfo_reqd = info
+        .iter()
+        .filter(|i| {
+            (i.flags & sys::PMIX_INFO_REQD != 0) && (i.flags & sys::PMIX_INFO_REQD_PROCESSED == 0)
+        })
+        .count();
+    println!("direct_modex called: ninfo={} ({})", info.len(), ninfo_reqd);
+    if ninfo_reqd > 0 {
+        return sys::PMIX_ERR_NOT_SUPPORTED;
+    };
+    let guard = PMIX_STATE.read().unwrap();
+
+    if let Some(State::Server(ref s)) = *guard {
+        let proc = unsafe { *proc };
+        let cb = (cbfunc, cbdata);
+        // mpsc::Sender only fails to send if the receiver is dropped. This only
+        // happens in Server::drop, which also clears PMIX_STATE state.
+        s.send(Event::DirectModex { proc, cb }).unwrap();
+        sys::PMIX_SUCCESS as sys::pmix_status_t
+    } else {
+        sys::PMIX_ERR_INIT as sys::pmix_status_t
+    }
 }
 
 unsafe extern "C" fn publish(
