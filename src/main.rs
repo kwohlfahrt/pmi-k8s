@@ -23,7 +23,7 @@ async fn main() -> Result<(), Error> {
     assert!(pmix::is_initialized());
 
     let n = 2;
-    let ns = pmix::server::Namespace::register(&mut s, c"foobar", 0, n, n as u32);
+    let ns = pmix::server::Namespace::register(&mut s, c"foobar", &[c"localhost"], 1);
     let clients = (0..n)
         .map(|i| pmix::server::Client::register(&ns, i as u32))
         .collect::<Vec<_>>();

@@ -28,13 +28,15 @@ pub(crate) fn server(
     node_rank: u32,
 ) -> Result<(), Error> {
     let namespace = "foo";
-    let _hostname = CString::new(format!("host-{}", node_rank)).unwrap();
+    let hostnames = (0..nnodes)
+        .map(|node_rank| CString::new(format!("host-{}", node_rank)).unwrap())
+        .collect::<Vec<_>>();
+    let hostnames = hostnames.iter().map(|h| h.as_c_str()).collect::<Vec<_>>();
     let fence = FileFence::new(tmpdir, nnodes, node_rank);
     let s = pmix::server::Server::init(fence).unwrap();
 
     let namespace = &CString::new(namespace).unwrap();
-    let n =
-        pmix::server::Namespace::register(&s, namespace, node_rank, nprocs, nprocs as u32 * nnodes);
+    let n = pmix::server::Namespace::register(&s, namespace, &hostnames, nprocs);
     let clients = ((node_rank * nprocs as u32)..((node_rank + 1) * nprocs as u32))
         .into_iter()
         .map(|i| pmix::server::Client::register(&n, i))

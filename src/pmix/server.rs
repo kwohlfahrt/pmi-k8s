@@ -59,7 +59,7 @@ impl<'a> Server<'a> {
         // happens during our own drop.
         match self.rx.recv_timeout(timeout) {
             Ok(globals::Event::Fence {
-                procs: _procs,
+                procs,
                 data,
                 cb: (Some(cbfunc), cbdata),
             }) => {
@@ -68,6 +68,9 @@ impl<'a> Server<'a> {
                 } else {
                     &[]
                 };
+                // TODO: Handle other fence scopes
+                assert_eq!(procs.len(), 1);
+                assert_eq!(procs[0].rank, sys::PMIX_RANK_WILDCARD);
 
                 let data = self.fence.fence(data);
                 unsafe {
@@ -106,9 +109,8 @@ impl<'a> Namespace<'a> {
     pub fn register(
         _server: &'a Server,
         namespace: &ffi::CStr,
-        rank: u32,
+        hostnames: &[&ffi::CStr],
         nlocalprocs: u16,
-        nprocs: u32,
     ) -> Self {
         let namespace = namespace.to_bytes_with_nul();
         let namespace = unsafe {
@@ -117,20 +119,37 @@ impl<'a> Namespace<'a> {
         let mut nspace: sys::pmix_nspace_t = [0; _];
         nspace[..namespace.len()].copy_from_slice(namespace);
 
-        let global_infos = [(sys::PMIX_JOB_SIZE, nprocs).into()];
-        let proc_infos = (0..nlocalprocs)
-            .map(|i| {
-                let rank = Rank((nlocalprocs as u32 * rank) + i as u32);
+        let nnodes = hostnames.len() as u32;
+
+        let node_infos = hostnames
+            .iter()
+            .enumerate()
+            .map(|(node_rank, hostname)| {
                 [
-                    (sys::PMIX_RANK, rank).into(),
-                    (sys::PMIX_LOCAL_RANK, i as u16).into(),
+                    (sys::PMIX_HOSTNAME, *hostname).into(),
+                    (sys::PMIX_NODEID, node_rank).into(),
                 ]
             })
-            .map(|infos| (sys::PMIX_PROC_INFO_ARRAY, infos.as_slice()).into());
+            .map(|infos| (sys::PMIX_NODE_INFO_ARRAY, infos.as_slice()).into());
+        let global_infos = [(sys::PMIX_JOB_SIZE, nnodes * nlocalprocs as u32).into()];
+
+        let proc_infos = (0..nnodes).flat_map(|node_rank| {
+            (0..nlocalprocs)
+                .map(move |i| {
+                    let rank = Rank((nlocalprocs as u32 * node_rank) + i as u32);
+                    [
+                        (sys::PMIX_RANK, rank).into(),
+                        (sys::PMIX_LOCAL_RANK, i as u16).into(),
+                        (sys::PMIX_NODEID, node_rank).into(),
+                    ]
+                })
+                .map(|infos| (sys::PMIX_PROC_INFO_ARRAY, infos.as_slice()).into())
+        });
 
         let mut infos = global_infos
             .into_iter()
             .chain(proc_infos)
+            .chain(node_infos)
             .collect::<Vec<_>>();
 
         let status = unsafe {
