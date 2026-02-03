@@ -8,11 +8,14 @@ use thiserror::Error;
 
 use super::sys;
 
+pub type ModexCallback = (sys::pmix_modex_cbfunc_t, *mut ffi::c_void);
+pub type CData = (*mut ffi::c_char, usize);
+
 pub enum Event {
     Fence {
         procs: Vec<sys::pmix_proc_t>,
-        data: (*mut ffi::c_char, usize),
-        cb: (sys::pmix_modex_cbfunc_t, *mut ffi::c_void),
+        data: CData,
+        cb: ModexCallback,
     },
 }
 

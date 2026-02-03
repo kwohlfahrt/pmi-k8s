@@ -1,7 +1,6 @@
 use std::ffi;
 use std::marker::PhantomData;
 use std::ptr;
-use std::slice;
 use std::sync::mpsc;
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
@@ -9,10 +8,7 @@ use std::time::Duration;
 use tempdir::TempDir;
 
 use super::super::fence;
-use super::env;
-use super::globals;
-use super::sys;
-use super::value::Rank;
+use super::{env, globals, sys, value::Rank};
 
 pub struct Server<'a> {
     fence: fence::FileFence<'a>,
@@ -55,35 +51,11 @@ impl<'a> Server<'a> {
     }
 
     pub fn handle_event(&self, timeout: Duration) {
+        self.fence.handle_files();
         // mpsc::Receiver only fails if all senders are dropped, which only
         // happens during our own drop.
         match self.rx.recv_timeout(timeout) {
-            Ok(globals::Event::Fence {
-                procs,
-                data,
-                cb: (Some(cbfunc), cbdata),
-            }) => {
-                let data = if !data.0.is_null() {
-                    unsafe { slice::from_raw_parts(data.0, data.1) }
-                } else {
-                    &[]
-                };
-                // TODO: Handle other fence scopes
-                assert_eq!(procs.len(), 1);
-                assert_eq!(procs[0].rank, sys::PMIX_RANK_WILDCARD);
-
-                let data = self.fence.fence(data);
-                unsafe {
-                    cbfunc(
-                        sys::PMIX_SUCCESS as i32,
-                        data.as_ptr(),
-                        data.len(),
-                        cbdata,
-                        Some(globals::release_vec_u8),
-                        Box::into_raw(data) as *mut ffi::c_void,
-                    )
-                };
-            }
+            Ok(globals::Event::Fence { procs, data, cb }) => self.fence.submit(procs, data, cb),
             Err(RecvTimeoutError::Timeout) => (),
             _ => unimplemented!(),
         }
