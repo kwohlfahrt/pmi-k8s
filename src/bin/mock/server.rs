@@ -1,40 +1,50 @@
-use std::{ffi::CString, path::Path, process::Command, thread, time::Duration};
-use tempdir::TempDir;
+use clap::Args;
+use std::{ffi::CString, path::PathBuf, process::Command, thread, time::Duration};
 
 use anyhow::Error;
 
 use mpi_k8s::{fence::FileFence, modex::FileModex, pmix};
 
-fn spawn_client(
-    subcommand: &str,
+#[derive(Debug, Args)]
+pub struct ServerArgs {
+    #[arg(long)]
+    tempdir: PathBuf,
+    #[arg(long)]
+    node_rank: u32,
+    #[arg(long)]
     nnodes: u32,
+    #[arg(long)]
     nprocs: u16,
-    c: &pmix::server::Client,
-) -> std::process::Child {
+    #[arg(last = true)]
+    command: Vec<String>,
+}
+
+fn spawn_client(args: &[String], c: &pmix::server::Client) -> std::process::Child {
     let mut cmd = Command::new(std::env::current_exe().unwrap());
     cmd.arg("client")
-        .arg(subcommand)
-        .arg((nnodes * nprocs as u32).to_string())
+        .args(args)
         .envs(&c.envs())
         .env("OMPI_MCA_pmix_base_async_modex", "1")
         .spawn()
         .unwrap()
 }
 
-pub(crate) fn server(
-    cmd: &str,
-    tmpdir: &Path,
-    nnodes: u32,
-    nprocs: u16,
-    node_rank: u32,
-) -> Result<(), Error> {
+pub(crate) fn run(args: ServerArgs) -> Result<(), Error> {
+    let ServerArgs {
+        nnodes,
+        tempdir: tmpdir,
+        node_rank,
+        nprocs,
+        command,
+    } = args;
+
     let namespace = "foo";
     let hostnames = (0..nnodes)
         .map(|node_rank| CString::new(format!("host-{}", node_rank)).unwrap())
         .collect::<Vec<_>>();
     let hostnames = hostnames.iter().map(|h| h.as_c_str()).collect::<Vec<_>>();
-    let fence = FileFence::new(tmpdir, nnodes, node_rank);
-    let modex = FileModex::new(tmpdir, node_rank, nprocs);
+    let fence = FileFence::new(&tmpdir, nnodes, node_rank);
+    let modex = FileModex::new(&tmpdir, node_rank, nprocs);
     let s = pmix::server::Server::init(fence, modex).unwrap();
 
     let namespace = &CString::new(namespace).unwrap();
@@ -46,7 +56,7 @@ pub(crate) fn server(
 
     let mut ps = clients
         .iter()
-        .map(|c| spawn_client(cmd, nnodes, nprocs, c))
+        .map(|c| spawn_client(&command, c))
         .collect::<Vec<_>>();
 
     let mut rc = Vec::with_capacity(ps.len());
@@ -58,37 +68,5 @@ pub(crate) fn server(
     });
 
     assert!(rc.into_iter().all(|rc| rc.is_ok_and(|rc| rc.success())));
-    Ok(())
-}
-
-fn spawn_server(
-    subcommand: &str,
-    tmpdir: &Path,
-    nnodes: u32,
-    nprocs: u32,
-    node_rank: u32,
-) -> std::process::Child {
-    let mut cmd = Command::new(std::env::current_exe().unwrap());
-    let tmpdir = tmpdir.to_str().unwrap();
-    let nnodes = nnodes.to_string();
-    let nprocs = nprocs.to_string();
-    let node_rank = node_rank.to_string();
-    cmd.args(["server", subcommand, tmpdir, &nnodes, &nprocs, &node_rank])
-        .spawn()
-        .unwrap()
-}
-
-pub(crate) fn servers(cmd: &str, nnodes: u32, nprocs: u32) -> Result<(), Error> {
-    let tmpdir = TempDir::new("pmix-servers").unwrap();
-
-    let mut ps = (0..nnodes)
-        .map(|rank| spawn_server(cmd, tmpdir.path(), nnodes, nprocs, rank))
-        .collect::<Vec<_>>();
-
-    assert!(
-        ps.iter_mut()
-            .map(|p| p.wait().unwrap())
-            .all(|rc| rc.success())
-    );
     Ok(())
 }

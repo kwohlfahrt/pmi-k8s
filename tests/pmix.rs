@@ -1,8 +1,20 @@
 use std::process::Command;
 
+use tempdir::TempDir;
+
 #[test]
 fn test_client() {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mock"));
-    let mut p = cmd.args(["servers", "pmix", "1", "1"]).spawn().unwrap();
-    assert!(p.wait().unwrap().success())
+    let tempdir = TempDir::new("test-pmix").unwrap();
+    let program = env!("CARGO_BIN_EXE_mock");
+
+    let mut cmd = Command::new(program);
+    cmd.arg("server")
+        .arg(format!("--tempdir={}", tempdir.path().to_str().unwrap()))
+        .arg(format!("--nnodes={}", 1))
+        .arg(format!("--nprocs={}", 1))
+        .arg(format!("--node-rank={}", 0))
+        .args(["--", "pmix"]);
+    let mut p = cmd.spawn().unwrap();
+    let rc = p.wait().unwrap();
+    assert!(rc.success());
 }
