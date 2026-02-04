@@ -24,7 +24,6 @@ fn spawn_client(args: &[String], c: &pmix::server::Client) -> std::process::Chil
     cmd.arg("client")
         .args(args)
         .envs(&c.envs())
-        .env("OMPI_MCA_pmix_base_async_modex", "1")
         .spawn()
         .unwrap()
 }
