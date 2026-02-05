@@ -11,7 +11,7 @@ use super::super::{fence, modex};
 use super::{env, globals, sys, value::Rank};
 
 pub struct Server<'a> {
-    fence: fence::FileFence<'a>,
+    fence: fence::NetFence<'a>,
     modex: modex::FileModex<'a>,
     rx: mpsc::Receiver<globals::Event>,
     _tmpdir: TempDir,
@@ -22,7 +22,7 @@ pub struct Server<'a> {
 
 impl<'a> Server<'a> {
     pub fn init(
-        fence: fence::FileFence<'a>,
+        fence: fence::NetFence<'a>,
         modex: modex::FileModex<'a>,
     ) -> Result<Self, globals::AlreadyInitialized> {
         let tmpdir = TempDir::new("pmix-server").unwrap();
@@ -56,7 +56,7 @@ impl<'a> Server<'a> {
     }
 
     pub fn handle_event(&self, timeout: Duration) {
-        self.fence.handle_files();
+        self.fence.handle_conns();
         self.modex.handle_files();
         // mpsc::Receiver only fails if all senders are dropped, which only
         // happens during our own drop.
@@ -212,9 +212,12 @@ impl<'a> Drop for Client<'a> {
 
 #[cfg(test)]
 mod test {
+    use std::net;
+
     use serial_test::serial;
     use tempdir::TempDir;
 
+    use super::super::super::peer::DirPeerDiscovery;
     use super::super::is_initialized;
     use super::*;
 
@@ -224,7 +227,11 @@ mod test {
         assert!(!is_initialized());
         {
             let tempdir = TempDir::new("server").unwrap();
-            let fence = fence::FileFence::new(tempdir.path(), 1, 0);
+            let discovery = DirPeerDiscovery::new(tempdir.path(), 1);
+            let fence = fence::NetFence::new(
+                net::SocketAddr::new(net::Ipv4Addr::LOCALHOST.into(), 0),
+                &discovery,
+            );
             let modex = modex::FileModex::new(tempdir.path(), 1, 0);
             let _s = Server::init(fence, modex).unwrap();
             assert!(is_initialized());
