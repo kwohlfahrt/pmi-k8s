@@ -12,7 +12,7 @@ use super::{env, globals, sys, value::Rank};
 
 pub struct Server<'a> {
     fence: fence::NetFence<'a>,
-    modex: modex::FileModex<'a>,
+    modex: modex::NetModex<'a>,
     rx: mpsc::Receiver<globals::Event>,
     _tmpdir: TempDir,
     // I'm not sure what PMIx functions are thread-safe, so mark the server as
@@ -23,7 +23,7 @@ pub struct Server<'a> {
 impl<'a> Server<'a> {
     pub fn init(
         fence: fence::NetFence<'a>,
-        modex: modex::FileModex<'a>,
+        modex: modex::NetModex<'a>,
     ) -> Result<Self, globals::AlreadyInitialized> {
         let tmpdir = TempDir::new("pmix-server").unwrap();
         let dirname = ffi::CString::new(tmpdir.path().as_os_str().as_encoded_bytes()).unwrap();
@@ -57,17 +57,15 @@ impl<'a> Server<'a> {
 
     pub fn handle_event(&self, timeout: Duration) {
         self.fence.handle_conns();
-        self.modex.handle_files();
+        self.modex.handle_conns();
         // mpsc::Receiver only fails if all senders are dropped, which only
         // happens during our own drop.
         match self.rx.recv_timeout(timeout) {
             Ok(globals::Event::Fence { procs, data, cb }) => self.fence.submit(procs, data, cb),
             Ok(globals::Event::DirectModex { proc, cb }) => self.modex.request(proc, cb),
-            Ok(globals::Event::DirectModexResponse {
-                node_rank,
-                proc,
-                data,
-            }) => self.modex.handle_response(node_rank, proc, data),
+            Ok(globals::Event::DirectModexResponse { proc, data }) => {
+                self.modex.send_response(proc, data)
+            }
             Err(RecvTimeoutError::Timeout) => (),
             _ => unimplemented!(),
         }
@@ -232,7 +230,11 @@ mod test {
                 net::SocketAddr::new(net::Ipv4Addr::LOCALHOST.into(), 0),
                 &discovery,
             );
-            let modex = modex::FileModex::new(tempdir.path(), 1, 0);
+            let modex = modex::NetModex::new(
+                net::SocketAddr::new(net::Ipv4Addr::LOCALHOST.into(), 0),
+                &discovery,
+                1,
+            );
             let _s = Server::init(fence, modex).unwrap();
             assert!(is_initialized());
         }

@@ -1,13 +1,13 @@
 use std::{
     collections::HashMap,
-    ffi::{self, CStr},
-    fs,
-    path::Path,
-    slice,
+    ffi::{self},
+    io::{self, Read, Write},
+    mem::{self},
+    net, slice,
     sync::Mutex,
 };
 
-use crate::pmix::globals::ModexCallback;
+use crate::{peer::DirPeerDiscovery, pmix::globals::ModexCallback};
 
 use super::pmix::{globals, sys};
 
@@ -24,141 +24,125 @@ unsafe extern "C" fn response(
         &[]
     };
     let data = data.to_vec();
-    let (node_rank, proc) = *unsafe { Box::from_raw(cbdata as *mut (u32, sys::pmix_proc_t)) };
+    let proc = *unsafe { Box::from_raw(cbdata as *mut sys::pmix_proc_t) };
 
     let guard = globals::PMIX_STATE.read().unwrap();
     if let Some(globals::State::Server(ref s)) = *guard {
-        s.send(globals::Event::DirectModexResponse {
-            node_rank,
-            proc,
-            data,
-        })
-        .unwrap();
+        s.send(globals::Event::DirectModexResponse { proc, data })
+            .unwrap();
     }
 }
 
-pub struct FileModex<'a> {
-    dir: &'a Path,
-    node_rank: u32,
-    nproc: u16,
-    callbacks: Mutex<HashMap<(String, u32), ModexCallback>>,
+struct ActiveModex {
+    to_send: HashMap<u32, net::TcpStream>,
+    to_recv: HashMap<u32, (net::TcpStream, Vec<u8>, ModexCallback)>,
 }
 
-impl<'a> FileModex<'a> {
-    pub fn new(dir: &'a Path, node_rank: u32, nproc: u16) -> Self {
-        fs::create_dir_all(dir.join("modex/req").join(node_rank.to_string())).unwrap();
-        fs::create_dir_all(dir.join("modex/resp").join(node_rank.to_string())).unwrap();
+pub struct NetModex<'a> {
+    peers: &'a DirPeerDiscovery<'a>,
+    listener: net::TcpListener,
+    nproc: u16,
+    active: Mutex<ActiveModex>,
+}
+
+impl<'a> NetModex<'a> {
+    pub fn new(addr: net::SocketAddr, peers: &'a DirPeerDiscovery, nproc: u16) -> Self {
+        let listener = net::TcpListener::bind(addr).unwrap();
+        listener.set_nonblocking(true).unwrap();
 
         Self {
-            dir,
-            node_rank,
+            listener,
+            peers,
             nproc,
-            callbacks: Mutex::new(HashMap::new()),
+            active: Mutex::new(ActiveModex {
+                to_send: HashMap::new(),
+                to_recv: HashMap::new(),
+            }),
         }
+    }
+
+    pub fn addr(&self) -> net::SocketAddr {
+        self.listener.local_addr().unwrap()
     }
 
     pub fn request(&self, proc: sys::pmix_proc_t, cb: globals::ModexCallback) {
         assert!(proc.rank <= sys::PMIX_RANK_VALID);
-        let ns = ffi::CStr::from_bytes_until_nul(&proc.nspace)
-            .unwrap()
-            .to_str()
-            .unwrap();
         let node_rank = proc.rank / self.nproc as u32;
 
-        {
-            let mut guard = self.callbacks.lock().unwrap();
-            guard.insert((ns.to_string(), proc.rank), cb);
-        }
-
-        let req_path = self
-            .dir
-            .join("modex/req")
-            .join(node_rank.to_string())
-            .join(format!("{}-{}-{}", self.node_rank, ns, proc.rank));
-        fs::write(req_path, "").unwrap();
+        let peer = self.peers.peers()[&node_rank];
+        let mut s = net::TcpStream::connect(peer).unwrap();
+        s.write_all(&proc.rank.to_be_bytes()).unwrap();
+        s.write_all(&proc.nspace).unwrap();
+        s.set_nonblocking(true).unwrap();
+        let mut guard = self.active.lock().unwrap();
+        guard.to_recv.insert(proc.rank, (s, Vec::new(), cb));
     }
 
-    fn parse_proc_filename(data: &str) -> (u32, sys::pmix_proc_t) {
-        let mut splits = data.split(|c| c == '-');
-        let node_rank = splits.next().unwrap().parse().unwrap();
-        let nspace = splits.next().unwrap();
-        let rank = splits.next().unwrap().parse().unwrap();
-        let mut proc = sys::pmix_proc_t {
-            nspace: [0; _],
-            rank,
+    fn handle_request(&self, mut s: net::TcpStream) {
+        let mut rank = [0; mem::size_of::<u32>()];
+        s.read_exact(&mut rank).unwrap();
+        let rank = u32::from_be_bytes(rank);
+        let mut nspace = [0; mem::size_of::<sys::pmix_nspace_t>()];
+        s.read_exact(&mut nspace).unwrap();
+        let proc = sys::pmix_proc_t { rank, nspace };
+
+        let dst = Box::new(proc);
+
+        let status = unsafe {
+            sys::PMIx_server_dmodex_request(
+                &proc,
+                Some(response),
+                Box::into_raw(dst) as *mut ffi::c_void,
+            )
         };
-        proc.nspace[0..nspace.len()].copy_from_slice(nspace.as_bytes());
-        (node_rank, proc)
+        assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
+
+        let mut guard = self.active.lock().unwrap();
+        guard.to_send.insert(proc.rank, s);
     }
 
-    pub fn handle_files(&self) {
-        let req_path = self.dir.join("modex/req").join(self.node_rank.to_string());
-        for r in fs::read_dir(req_path)
-            .unwrap()
-            .into_iter()
-            .map(|r| r.unwrap())
-        {
-            let (node_rank, proc) =
-                Self::parse_proc_filename(&r.file_name().into_string().unwrap());
-            let dst = Box::new((node_rank, proc));
+    fn receive_response(&self, s: &mut net::TcpStream, acc: &mut Vec<u8>) -> bool {
+        match s.read_to_end(acc) {
+            Ok(_) => true,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => false,
+            Err(e) => panic!("unexpected read error: {e}"),
+        }
+    }
 
-            let status = unsafe {
-                sys::PMIx_server_dmodex_request(
-                    &proc,
-                    Some(response),
-                    Box::into_raw(dst) as *mut ffi::c_void,
-                )
+    pub fn handle_conns(&self) {
+        loop {
+            match self.listener.accept() {
+                Ok((c, _)) => self.handle_request(c),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                Err(e) => panic!("unexpected accept error: {e}"),
             };
-            assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
-            fs::remove_file(r.path()).unwrap();
         }
 
-        let resp_path = self.dir.join("modex/resp").join(self.node_rank.to_string());
-        for r in fs::read_dir(resp_path)
-            .unwrap()
-            .into_iter()
-            .map(|r| r.unwrap())
-        {
-            let (_, proc) = Self::parse_proc_filename(&r.file_name().into_string().unwrap());
-            let data = Box::new(fs::read(r.path()).unwrap());
-            fs::remove_file(r.path()).unwrap();
+        let mut guard = self.active.lock().unwrap();
+        let done = guard
+            .to_recv
+            .extract_if(|_, (s, acc, _)| self.receive_response(s, acc));
 
-            let ns = ffi::CStr::from_bytes_until_nul(&proc.nspace)
-                .unwrap()
-                .to_str()
-                .unwrap();
-
-            let cb = {
-                let mut guard = self.callbacks.lock().unwrap();
-                guard.remove(&(ns.to_string(), proc.rank)).unwrap()
-            };
-            let (Some(cbfunc), cbdata) = cb else {
-                continue;
-            };
-
-            unsafe {
-                cbfunc(
-                    sys::PMIX_SUCCESS as sys::pmix_status_t,
-                    data.as_ptr(),
-                    data.len(),
-                    cbdata,
-                    Some(globals::release_vec_u8),
-                    Box::into_raw(data) as *mut ffi::c_void,
-                )
+        for (_, (_, acc, cb)) in done {
+            let data = Box::new(acc);
+            if let (Some(cbfunc), cbdata) = cb {
+                unsafe {
+                    cbfunc(
+                        sys::PMIX_SUCCESS as sys::pmix_status_t,
+                        data.as_ptr(),
+                        data.len(),
+                        cbdata,
+                        Some(globals::release_vec_u8),
+                        Box::into_raw(data) as *mut ffi::c_void,
+                    )
+                }
             }
         }
     }
 
-    pub fn handle_response(&self, node_rank: u32, proc: sys::pmix_proc_t, data: Vec<u8>) {
-        let nspace = CStr::from_bytes_until_nul(&proc.nspace)
-            .unwrap()
-            .to_str()
-            .unwrap();
-        let resp_path = self
-            .dir
-            .join("modex/resp")
-            .join(node_rank.to_string())
-            .join(format!("{}-{}-{}", self.node_rank, nspace, proc.rank));
-        fs::write(resp_path, data).unwrap();
+    pub fn send_response(&self, proc: sys::pmix_proc_t, data: Vec<u8>) {
+        let mut guard = self.active.lock().unwrap();
+        let mut c = guard.to_send.remove(&proc.rank).unwrap();
+        c.write_all(&data).unwrap();
     }
 }

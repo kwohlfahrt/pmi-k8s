@@ -3,7 +3,7 @@ use std::{ffi::CString, fs, net, path::PathBuf, process::Command, thread, time::
 
 use anyhow::Error;
 
-use mpi_k8s::{fence::NetFence, modex::FileModex, peer::DirPeerDiscovery, pmix};
+use mpi_k8s::{fence::NetFence, modex::NetModex, peer::DirPeerDiscovery, pmix};
 
 #[derive(Debug, Args)]
 pub struct ServerArgs {
@@ -36,21 +36,31 @@ pub(crate) fn run(args: ServerArgs) -> Result<(), Error> {
         nprocs,
         command,
     } = args;
-    let peer_dir = tmpdir.join("peer-discovery");
-    fs::create_dir_all(&peer_dir).unwrap();
 
     let namespace = "foo";
     let hostnames = (0..nnodes)
         .map(|node_rank| CString::new(format!("host-{}", node_rank)).unwrap())
         .collect::<Vec<_>>();
     let hostnames = hostnames.iter().map(|h| h.as_c_str()).collect::<Vec<_>>();
+
+    let peer_dir = tmpdir.join("peer-discovery-fence");
+    fs::create_dir_all(&peer_dir).unwrap();
     let peers = DirPeerDiscovery::new(&peer_dir, nnodes);
     let fence = NetFence::new(
         net::SocketAddr::new(net::Ipv6Addr::LOCALHOST.into(), 0),
         &peers,
     );
     peers.register(&fence.addr(), node_rank);
-    let modex = FileModex::new(&tmpdir, node_rank, nprocs);
+
+    let peer_dir = tmpdir.join("peer-discovery-modex");
+    fs::create_dir_all(&peer_dir).unwrap();
+    let peers = DirPeerDiscovery::new(&peer_dir, nnodes);
+    let modex = NetModex::new(
+        net::SocketAddr::new(net::Ipv6Addr::LOCALHOST.into(), 0),
+        &peers,
+        nprocs,
+    );
+    peers.register(&modex.addr(), node_rank);
     let s = pmix::server::Server::init(fence, modex).unwrap();
 
     let namespace = &CString::new(namespace).unwrap();

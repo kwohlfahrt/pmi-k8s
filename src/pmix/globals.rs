@@ -22,7 +22,6 @@ pub enum Event {
         cb: (sys::pmix_modex_cbfunc_t, *mut ffi::c_void),
     },
     DirectModexResponse {
-        node_rank: u32,
         proc: sys::pmix_proc_t,
         data: Vec<u8>,
     },
