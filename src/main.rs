@@ -23,6 +23,7 @@ async fn main() -> Result<(), Error> {
         net::SocketAddr::new(net::Ipv4Addr::LOCALHOST.into(), 0),
         &peers,
     );
+    peers.register(&fence.addr(), 0);
     let modex = FileModex::new(tmpdir.path(), 0, 1);
     let mut s = pmix::server::Server::init(fence, modex).unwrap();
     assert!(pmix::is_initialized());

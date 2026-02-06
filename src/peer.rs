@@ -1,22 +1,22 @@
 // FIXME: This is only used in testing, make the dependency dev-only
 use notify::{self, Watcher};
-use std::{collections::HashSet, fs, net, path::Path, sync::mpsc};
+use std::{collections::HashMap, fs, net, path::Path, sync::mpsc};
 
 pub struct DirPeerDiscovery<'a> {
     dir: &'a Path,
-    n: u32,
+    nnodes: u32,
 }
 
 impl<'a> DirPeerDiscovery<'a> {
-    pub fn new(dir: &'a Path, n: u32) -> Self {
-        DirPeerDiscovery { dir, n }
+    pub fn new(dir: &'a Path, nnodes: u32) -> Self {
+        DirPeerDiscovery { dir, nnodes }
     }
 
     fn read_peer(path: &Path) -> net::SocketAddr {
         fs::read_to_string(path).unwrap().trim().parse().unwrap()
     }
 
-    pub fn peers(&self) -> HashSet<net::SocketAddr> {
+    pub fn peers(&self) -> HashMap<u32, net::SocketAddr> {
         let (tx, rx) = mpsc::channel();
         let mut watcher = notify::recommended_watcher(tx).unwrap();
         watcher
@@ -25,21 +25,26 @@ impl<'a> DirPeerDiscovery<'a> {
 
         let mut addrs = fs::read_dir(&self.dir)
             .unwrap()
-            .map(|e| Self::read_peer(&e.unwrap().path()))
-            .collect::<HashSet<_>>();
-        while addrs.len() < self.n as usize {
+            .map(|e| {
+                let path = e.unwrap().path();
+                let node_rank = path.file_name().unwrap().to_str().unwrap().parse().unwrap();
+                (node_rank, Self::read_peer(&path))
+            })
+            .collect::<HashMap<u32, net::SocketAddr>>();
+        while addrs.len() < self.nnodes as usize {
             let event = rx.recv().unwrap().unwrap();
             if event.kind == notify::EventKind::Create(notify::event::CreateKind::File) {
                 event.paths.into_iter().for_each(|p| {
-                    addrs.insert(Self::read_peer(&p));
+                    let node_rank = p.file_name().unwrap().to_str().unwrap().parse().unwrap();
+                    addrs.insert(node_rank, Self::read_peer(&p));
                 });
             }
         }
         addrs
     }
 
-    pub fn register(&self, addr: &net::SocketAddr) {
-        let path = self.dir.join(format!("{}", addr.port()));
+    pub fn register(&self, addr: &net::SocketAddr, node_rank: u32) {
+        let path = self.dir.join(node_rank.to_string());
         fs::write(path, addr.to_string()).unwrap();
     }
 }
@@ -57,12 +62,18 @@ mod test {
         let n = 2;
         let discovery = DirPeerDiscovery::new(dir.path(), n);
         let expected = (0..n as u16)
-            .map(|i| net::SocketAddr::new(net::Ipv4Addr::new(127, 0, 0, 1).into(), 5000 + i))
-            .collect::<HashSet<_>>();
+            .map(|i| {
+                (
+                    i as u32,
+                    net::SocketAddr::new(net::Ipv4Addr::new(127, 0, 0, 1).into(), 5000 + i),
+                )
+            })
+            .collect::<HashMap<u32, _>>();
+
         let peers = thread::scope(|scope| {
             let t = scope.spawn(|| discovery.peers());
-            for addr in &expected {
-                discovery.register(addr);
+            for (i, addr) in &expected {
+                discovery.register(addr, *i);
             }
             t.join().unwrap()
         });

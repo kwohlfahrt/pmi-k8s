@@ -49,6 +49,7 @@ pub(crate) fn run(args: ServerArgs) -> Result<(), Error> {
         net::SocketAddr::new(net::Ipv6Addr::LOCALHOST.into(), 0),
         &peers,
     );
+    peers.register(&fence.addr(), node_rank);
     let modex = FileModex::new(&tmpdir, node_rank, nprocs);
     let s = pmix::server::Server::init(fence, modex).unwrap();
 

@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     ffi,
     io::{self, Read, Write},
     net, slice,
@@ -11,9 +12,8 @@ use super::pmix::{globals, sys};
 struct ActiveFence {
     data: Vec<u8>,
     acc: Vec<u8>,
-    peers: Vec<net::SocketAddr>,
-    n_send: usize,
-    n_recv: usize,
+    to_send: HashMap<u32, net::SocketAddr>,
+    to_recv: usize,
     callback: globals::ModexCallback,
 }
 
@@ -28,7 +28,6 @@ impl<'a> NetFence<'a> {
         let state = Mutex::new(None);
         let listener = net::TcpListener::bind(addr).unwrap();
         listener.set_nonblocking(true).unwrap();
-        discovery.register(&listener.local_addr().unwrap());
         Self {
             discovery,
             state,
@@ -66,9 +65,8 @@ impl<'a> NetFence<'a> {
         *guard = Some(ActiveFence {
             data,
             acc: Vec::new(),
-            peers: peers.into_iter().collect(),
-            n_send: 0,
-            n_recv: 0,
+            to_recv: peers.len(),
+            to_send: peers,
             callback,
         });
     }
@@ -78,31 +76,30 @@ impl<'a> NetFence<'a> {
         {
             let Some(ref mut fence) = *guard else { return };
 
-            while fence.n_recv < fence.peers.len() {
+            while fence.to_recv > 0 {
                 match self.listener.accept() {
                     Ok((mut c, _)) => {
                         c.read_to_end(&mut fence.acc).unwrap();
-                        fence.n_recv += 1;
+                        fence.to_recv -= 1;
                     }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                     Err(e) => panic!("unexpected accept error: {e}"),
                 };
             }
 
-            while fence.n_send < fence.peers.len() {
-                let addr = fence.peers[fence.n_send];
-                match net::TcpStream::connect(addr) {
+            fence.to_send.retain(|_, addr| {
+                match net::TcpStream::connect(*addr) {
                     Ok(mut c) => {
                         c.write_all(&fence.data).unwrap();
-                        fence.n_send += 1;
+                        false
                     }
                     // Peer is not listening yet
-                    Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => continue,
+                    Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => true,
                     Err(e) => panic!("unexpected send error: {e}"),
                 }
-            }
+            });
 
-            if fence.n_send < fence.peers.len() || fence.n_recv < fence.peers.len() {
+            if fence.to_send.len() > 0 || fence.to_recv > 0 {
                 return;
             }
         }
@@ -178,6 +175,9 @@ mod test {
                 NetFence::new(addr, &discovery)
             })
             .collect::<Vec<_>>();
+        for (i, f) in fences.iter().enumerate() {
+            discovery.register(&f.addr(), i as u32)
+        }
 
         let proc = sys::pmix_proc_t {
             nspace: [0; _],
