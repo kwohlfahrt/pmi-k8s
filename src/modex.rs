@@ -7,7 +7,7 @@ use std::{
     sync::Mutex,
 };
 
-use crate::{peer::DirPeerDiscovery, pmix::globals::ModexCallback};
+use crate::{peer::dir::PeerDiscovery, pmix::globals::ModexCallback};
 
 use super::pmix::{globals, sys};
 
@@ -39,14 +39,14 @@ struct ActiveModex {
 }
 
 pub struct NetModex<'a> {
-    peers: &'a DirPeerDiscovery<'a>,
+    peers: &'a PeerDiscovery<'a>,
     listener: net::TcpListener,
     nproc: u16,
     active: Mutex<ActiveModex>,
 }
 
 impl<'a> NetModex<'a> {
-    pub fn new(addr: net::SocketAddr, peers: &'a DirPeerDiscovery, nproc: u16) -> Self {
+    pub fn new(addr: net::SocketAddr, peers: &'a PeerDiscovery, nproc: u16) -> Self {
         let listener = net::TcpListener::bind(addr).unwrap();
         listener.set_nonblocking(true).unwrap();
 

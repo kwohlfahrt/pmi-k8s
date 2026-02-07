@@ -3,7 +3,7 @@ use std::{ffi::CString, fs, net, path::PathBuf, process::Command, thread, time::
 
 use anyhow::Error;
 
-use mpi_k8s::{fence::NetFence, modex::NetModex, peer::DirPeerDiscovery, pmix};
+use mpi_k8s::{fence::NetFence, modex::NetModex, peer::dir::PeerDiscovery, pmix};
 
 #[derive(Debug, Args)]
 pub struct ServerArgs {
@@ -45,7 +45,7 @@ pub(crate) fn run(args: ServerArgs) -> Result<(), Error> {
 
     let peer_dir = tmpdir.join("peer-discovery-fence");
     fs::create_dir_all(&peer_dir).unwrap();
-    let peers = DirPeerDiscovery::new(&peer_dir, nnodes);
+    let peers = PeerDiscovery::new(&peer_dir, nnodes);
     let fence = NetFence::new(
         net::SocketAddr::new(net::Ipv6Addr::LOCALHOST.into(), 0),
         &peers,
@@ -54,7 +54,7 @@ pub(crate) fn run(args: ServerArgs) -> Result<(), Error> {
 
     let peer_dir = tmpdir.join("peer-discovery-modex");
     fs::create_dir_all(&peer_dir).unwrap();
-    let peers = DirPeerDiscovery::new(&peer_dir, nnodes);
+    let peers = PeerDiscovery::new(&peer_dir, nnodes);
     let modex = NetModex::new(
         net::SocketAddr::new(net::Ipv6Addr::LOCALHOST.into(), 0),
         &peers,

@@ -215,7 +215,7 @@ mod test {
     use serial_test::serial;
     use tempdir::TempDir;
 
-    use super::super::super::peer::DirPeerDiscovery;
+    use super::super::super::peer::dir::PeerDiscovery;
     use super::super::is_initialized;
     use super::*;
 
@@ -225,7 +225,7 @@ mod test {
         assert!(!is_initialized());
         {
             let tempdir = TempDir::new("server").unwrap();
-            let discovery = DirPeerDiscovery::new(tempdir.path(), 1);
+            let discovery = PeerDiscovery::new(tempdir.path(), 1);
             let fence = fence::NetFence::new(
                 net::SocketAddr::new(net::Ipv4Addr::LOCALHOST.into(), 0),
                 &discovery,

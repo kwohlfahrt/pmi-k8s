@@ -6,7 +6,7 @@ use std::{
     sync::Mutex,
 };
 
-use super::peer::DirPeerDiscovery;
+use super::peer::dir::PeerDiscovery;
 use super::pmix::{globals, sys};
 
 struct ActiveFence {
@@ -18,13 +18,13 @@ struct ActiveFence {
 }
 
 pub struct NetFence<'a> {
-    discovery: &'a DirPeerDiscovery<'a>,
+    discovery: &'a PeerDiscovery<'a>,
     listener: net::TcpListener,
     state: Mutex<Option<ActiveFence>>,
 }
 
 impl<'a> NetFence<'a> {
-    pub fn new(addr: net::SocketAddr, discovery: &'a DirPeerDiscovery) -> Self {
+    pub fn new(addr: net::SocketAddr, discovery: &'a PeerDiscovery) -> Self {
         let state = Mutex::new(None);
         let listener = net::TcpListener::bind(addr).unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -168,7 +168,7 @@ mod test {
     fn test_fence() {
         let n = 4;
         let tmpdir = TempDir::new("fence-test").unwrap();
-        let discovery = DirPeerDiscovery::new(tmpdir.path(), n);
+        let discovery = PeerDiscovery::new(tmpdir.path(), n);
         let fences = (0..n)
             .map(|_| {
                 let addr = net::SocketAddr::new(net::Ipv4Addr::LOCALHOST.into(), 0);
