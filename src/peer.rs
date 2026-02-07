@@ -16,31 +16,40 @@ impl<'a> DirPeerDiscovery<'a> {
         fs::read_to_string(path).unwrap().trim().parse().unwrap()
     }
 
-    pub fn peers(&self) -> HashMap<u32, net::SocketAddr> {
+    fn wait_for_peer(&self, path: &Path) -> net::SocketAddr {
         let (tx, rx) = mpsc::channel();
         let mut watcher = notify::recommended_watcher(tx).unwrap();
         watcher
             .watch(self.dir, notify::RecursiveMode::NonRecursive)
             .unwrap();
 
-        let mut addrs = fs::read_dir(&self.dir)
-            .unwrap()
-            .map(|e| {
-                let path = e.unwrap().path();
-                let node_rank = path.file_name().unwrap().to_str().unwrap().parse().unwrap();
-                (node_rank, Self::read_peer(&path))
-            })
-            .collect::<HashMap<u32, net::SocketAddr>>();
-        while addrs.len() < self.nnodes as usize {
+        if path.exists() {
+            return Self::read_peer(path);
+        }
+
+        loop {
             let event = rx.recv().unwrap().unwrap();
             if event.kind == notify::EventKind::Create(notify::event::CreateKind::File) {
-                event.paths.into_iter().for_each(|p| {
-                    let node_rank = p.file_name().unwrap().to_str().unwrap().parse().unwrap();
-                    addrs.insert(node_rank, Self::read_peer(&p));
-                });
+                if event.paths.iter().any(|p| p == path) {
+                    break Self::read_peer(path);
+                }
             }
         }
-        addrs
+    }
+
+    pub fn peer(&self, node_rank: u32) -> net::SocketAddr {
+        let path = self.dir.join(format!("{}", node_rank));
+        if path.exists() {
+            Self::read_peer(&path)
+        } else {
+            self.wait_for_peer(&path)
+        }
+    }
+
+    pub fn peers(&self) -> HashMap<u32, net::SocketAddr> {
+        (0..self.nnodes)
+            .map(|node_rank| (node_rank, self.peer(node_rank)))
+            .collect()
     }
 
     pub fn register(&self, addr: &net::SocketAddr, node_rank: u32) {

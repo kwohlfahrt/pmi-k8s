@@ -69,7 +69,7 @@ impl<'a> NetModex<'a> {
         assert!(proc.rank <= sys::PMIX_RANK_VALID);
         let node_rank = proc.rank / self.nproc as u32;
 
-        let peer = self.peers.peers()[&node_rank];
+        let peer = self.peers.peer(node_rank);
         let mut s = net::TcpStream::connect(peer).unwrap();
         s.write_all(&proc.rank.to_be_bytes()).unwrap();
         s.write_all(&proc.nspace).unwrap();
