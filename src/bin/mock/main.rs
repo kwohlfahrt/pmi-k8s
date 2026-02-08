@@ -20,6 +20,12 @@ fn main() -> Result<(), Error> {
     let args = Cli::parse();
     match args.cmd {
         Commands::Client(args) => client::run(args),
-        Commands::Server(args) => server::run(args),
+        Commands::Server(args) => {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(server::run(args))
+        }
     }
 }

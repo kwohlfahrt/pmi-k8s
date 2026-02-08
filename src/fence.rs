@@ -1,54 +1,35 @@
-use std::{
-    collections::HashMap,
-    ffi,
-    io::{self, Read, Write},
-    net, slice,
-    sync::Mutex,
-};
+use std::net::SocketAddr;
+use std::time::Duration;
+use std::{ffi, io, slice};
 
-use super::peer::dir::PeerDiscovery;
-use super::pmix::{globals, sys};
+use futures::future::{join, join_all};
+use futures::{StreamExt, TryStreamExt, stream};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::{net, time};
 
-struct ActiveFence {
-    data: Vec<u8>,
-    acc: Vec<u8>,
-    to_send: HashMap<u32, net::SocketAddr>,
-    to_recv: usize,
-    callback: globals::ModexCallback,
-}
+use crate::peer::dir::PeerDiscovery;
+use crate::pmix::{globals, sys};
 
 pub struct NetFence<'a> {
-    discovery: &'a PeerDiscovery<'a>,
     listener: net::TcpListener,
-    state: Mutex<Option<ActiveFence>>,
+    discovery: &'a PeerDiscovery<'a>,
 }
 
 impl<'a> NetFence<'a> {
-    pub fn new(addr: net::SocketAddr, discovery: &'a PeerDiscovery) -> Self {
-        let state = Mutex::new(None);
-        let listener = net::TcpListener::bind(addr).unwrap();
-        listener.set_nonblocking(true).unwrap();
+    pub async fn new(addr: SocketAddr, discovery: &'a PeerDiscovery<'a>) -> Self {
+        let listener: net::TcpListener = net::TcpListener::bind(addr).await.unwrap();
         Self {
-            discovery,
-            state,
             listener,
+            discovery,
         }
     }
 
-    pub fn addr(&self) -> net::SocketAddr {
+    pub fn addr(&self) -> SocketAddr {
         self.listener.local_addr().unwrap()
     }
 
-    pub fn submit(
-        &self,
-        procs: Vec<sys::pmix_proc_t>,
-        data: globals::CData,
-        callback: globals::ModexCallback,
-    ) {
-        // TODO: Handle other fence scopes
-        assert_eq!(procs.len(), 1);
-        assert_eq!(procs[0].rank, sys::PMIX_RANK_WILDCARD);
-
+    fn read_data(data: globals::CData) -> Vec<u8> {
+        // TODO: make a wrapper type for globals::CData to avoid the copy.
         let (ptr, _) = data;
         let data = if !data.0.is_null() {
             let slice = unsafe { slice::from_raw_parts(data.0, data.1) };
@@ -56,67 +37,68 @@ impl<'a> NetFence<'a> {
         } else {
             Vec::new()
         };
-        unsafe { libc::free(ptr as *mut ffi::c_void) }
+        unsafe { libc::free(ptr as *mut ffi::c_void) };
 
-        // We could exclude ourselves, but this works too.
-        let peers = self.discovery.peers();
-        let mut guard = self.state.lock().unwrap();
-        assert!(guard.is_none());
-        *guard = Some(ActiveFence {
-            data,
-            acc: Vec::new(),
-            to_recv: peers.len(),
-            to_send: peers,
-            callback,
-        });
+        data
     }
 
-    pub fn handle_conns(&self) {
-        let mut guard = self.state.lock().unwrap();
-        {
-            let Some(ref mut fence) = *guard else { return };
+    async fn recv(&self, n: usize) -> Vec<u8> {
+        stream::iter(0..n)
+            .then(|_| self.listener.accept())
+            .try_fold(Vec::new(), async |mut acc, (mut c, _)| {
+                c.read_to_end(&mut acc).await?;
+                Ok(acc)
+            })
+            .await
+            .unwrap()
+    }
 
-            while fence.to_recv > 0 {
-                match self.listener.accept() {
-                    Ok((mut c, _)) => {
-                        c.read_to_end(&mut fence.acc).unwrap();
-                        fence.to_recv -= 1;
-                    }
-                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                    Err(e) => panic!("unexpected accept error: {e}"),
-                };
-            }
-
-            fence.to_send.retain(|_, addr| {
-                match net::TcpStream::connect(*addr) {
-                    Ok(mut c) => {
-                        c.write_all(&fence.data).unwrap();
-                        false
-                    }
-                    // Peer is not listening yet
-                    Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => true,
-                    Err(e) => panic!("unexpected send error: {e}"),
+    async fn send(addr: &SocketAddr, data: &[u8]) {
+        let mut s = loop {
+            match net::TcpStream::connect(addr).await {
+                Ok(s) => break s,
+                Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
+                    // TODO: Proper backoff
+                    time::sleep(Duration::from_millis(250)).await
                 }
-            });
-
-            if fence.to_send.len() > 0 || fence.to_recv > 0 {
-                return;
+                Err(e) => panic!("unexpected send error: {e}"),
             }
-        }
+        };
+        s.write_all(data).await.unwrap();
+    }
 
-        let fence = guard.take().unwrap();
-        let (Some(cbfunc), cbdata) = fence.callback else {
+    async fn submit_data(&self, procs: &[sys::pmix_proc_t], data: &[u8]) -> Vec<u8> {
+        // TODO: Handle other fence scopes
+        assert_eq!(procs.len(), 1);
+        assert_eq!(procs[0].rank, sys::PMIX_RANK_WILDCARD);
+
+        // TODO: exclude ourselves from send + recv
+        let peers = self.discovery.peers().await;
+        let sends = peers.values().map(|addr| Self::send(&addr, &data));
+        let acc = self.recv(peers.len());
+
+        join(acc, join_all(sends)).await.0
+    }
+
+    pub async fn submit(
+        &self,
+        procs: &[sys::pmix_proc_t],
+        data: globals::CData,
+        callback: globals::ModexCallback,
+    ) {
+        let (Some(cbfunc), cbdata) = callback else {
             return;
         };
-        let data = Box::new(fence.acc);
+        let data = Self::read_data(data);
+        let acc = Box::new(self.submit_data(procs, &data).await);
         unsafe {
             cbfunc(
                 sys::PMIX_SUCCESS as sys::pmix_status_t,
-                data.as_ptr(),
-                data.len(),
+                acc.as_ptr(),
+                acc.len(),
                 cbdata,
                 Some(globals::release_vec_u8),
-                Box::into_raw(data) as *mut ffi::c_void,
+                Box::into_raw(acc) as *mut ffi::c_void,
             )
         }
     }
@@ -124,86 +106,37 @@ impl<'a> NetFence<'a> {
 
 #[cfg(test)]
 mod test {
-    use std::{collections::HashSet, sync::mpsc};
-
-    use tempdir::TempDir;
+    use std::{collections::HashSet, net::Ipv4Addr};
 
     use super::*;
+    use tempdir::TempDir;
 
-    type Cb = unsafe extern "C" fn(
-        status: sys::pmix_status_t,
-        data: *const ::std::os::raw::c_char,
-        ndata: usize,
-        cbdata: *mut ::std::os::raw::c_void,
-        release_fn: sys::pmix_release_cbfunc_t,
-        release_cbdata: *mut ::std::os::raw::c_void,
-    );
-
-    unsafe extern "C" fn cb(
-        _status: sys::pmix_status_t,
-        data: *const std::ffi::c_char,
-        ndata: usize,
-        cbdata: *mut std::ffi::c_void,
-        release_fn: sys::pmix_release_cbfunc_t,
-        release_cbdata: *mut std::ffi::c_void,
-    ) {
-        let cbdata = cbdata as *mut mpsc::Sender<Vec<u8>>;
-        let tx = unsafe { Box::from_raw(cbdata) };
-        let data = unsafe { slice::from_raw_parts(data, ndata) };
-        tx.send(data.to_vec()).unwrap();
-        if let Some(f) = release_fn {
-            unsafe { f(release_cbdata) };
-        }
-    }
-
-    fn alloc_data(data: &[u8]) -> (*mut u8, usize) {
-        let size = data.len();
-        let p = unsafe { libc::malloc(size) } as *mut u8;
-        let slice = unsafe { slice::from_raw_parts_mut(p, size) };
-        slice.copy_from_slice(data);
-        (p, size)
-    }
-
-    #[test]
-    fn test_fence() {
+    #[tokio::test]
+    async fn test_fence() {
         let n = 4;
         let tmpdir = TempDir::new("fence-test").unwrap();
         let discovery = PeerDiscovery::new(tmpdir.path(), n);
-        let fences = (0..n)
-            .map(|_| {
-                let addr = net::SocketAddr::new(net::Ipv4Addr::LOCALHOST.into(), 0);
-                NetFence::new(addr, &discovery)
-            })
-            .collect::<Vec<_>>();
+        let fences = join_all((0..n).map(|_| {
+            let addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0);
+            NetFence::new(addr, &discovery)
+        }))
+        .await;
         for (i, f) in fences.iter().enumerate() {
-            discovery.register(&f.addr(), i as u32)
+            discovery.register(&f.addr(), i as u32);
         }
-
-        let proc = sys::pmix_proc_t {
+        let procs = [sys::pmix_proc_t {
             nspace: [0; _],
             rank: sys::PMIX_RANK_WILDCARD,
-        };
-        let rxs = fences
-            .iter()
-            .enumerate()
-            .map(|(i, fence)| {
-                let data = alloc_data(&[i as u8]);
-                let (tx, rx) = mpsc::channel::<Vec<u8>>();
-                let tx = Box::new(tx);
-                let callback = (Some(cb as Cb), Box::into_raw(tx) as *mut ffi::c_void);
-                fence.submit(vec![proc], data, callback);
-                fence.handle_conns(); // Test the case where not all members are ready
-                rx
-            })
-            .collect::<Vec<_>>();
+        }];
+        let results = join_all(fences.iter().enumerate().map(async |(i, f)| {
+            let data = [i as u8];
+            f.submit_data(&procs, &data).await
+        }));
 
-        let expected = (0..n as u8).collect::<HashSet<u8>>();
-        for (fence, rx) in fences.iter().zip(rxs) {
-            fence.handle_conns();
-            assert_eq!(
-                rx.try_recv().unwrap().into_iter().collect::<HashSet<_>>(),
-                expected
-            );
+        let expected = (0..n as u8).collect::<HashSet<_>>();
+        for result in results.await {
+            let result = result.into_iter().collect::<HashSet<_>>();
+            assert_eq!(result, expected)
         }
     }
 }

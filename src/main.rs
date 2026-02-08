@@ -22,14 +22,16 @@ async fn main() -> Result<(), Error> {
     let fence = NetFence::new(
         net::SocketAddr::new(net::Ipv4Addr::LOCALHOST.into(), 0),
         &peers,
-    );
+    )
+    .await;
     peers.register(&fence.addr(), 0);
     let peers = PeerDiscovery::new(tmpdir.path(), 1);
     let modex = NetModex::new(
         net::SocketAddr::new(net::Ipv4Addr::LOCALHOST.into(), 0),
         &peers,
         1,
-    );
+    )
+    .await;
     peers.register(&modex.addr(), 0);
     let mut s = pmix::server::Server::init(fence, modex).unwrap();
     assert!(pmix::is_initialized());

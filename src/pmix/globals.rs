@@ -1,10 +1,6 @@
-use std::{
-    ffi,
-    marker::PhantomData,
-    slice,
-    sync::{RwLock, mpsc},
-};
+use std::{ffi, marker::PhantomData, slice, sync::RwLock};
 use thiserror::Error;
+use tokio::sync::mpsc;
 
 use super::sys;
 
@@ -21,17 +17,13 @@ pub enum Event {
         proc: sys::pmix_proc_t,
         cb: (sys::pmix_modex_cbfunc_t, *mut ffi::c_void),
     },
-    DirectModexResponse {
-        proc: sys::pmix_proc_t,
-        data: Vec<u8>,
-    },
 }
 
 unsafe impl Send for Event {}
 
 pub enum State {
     Client,
-    Server(mpsc::Sender<Event>),
+    Server(mpsc::UnboundedSender<Event>),
 }
 
 pub static PMIX_STATE: RwLock<Option<State>> = RwLock::new(None);
