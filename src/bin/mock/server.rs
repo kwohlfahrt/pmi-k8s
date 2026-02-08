@@ -1,9 +1,10 @@
 use clap::Args;
-use std::{ffi::CString, fs, net, path::PathBuf, process::Command, thread, time::Duration};
+use futures::future::{Either, select};
+use std::{ffi::CString, fs, net, path::PathBuf, pin::pin, process::Command};
 
 use anyhow::Error;
 
-use mpi_k8s::{fence::NetFence, modex::NetModex, peer::DirPeerDiscovery, pmix};
+use mpi_k8s::{fence::NetFence, modex::NetModex, peer::dir::PeerDiscovery, pmix};
 
 #[derive(Debug, Args)]
 pub struct ServerArgs {
@@ -28,7 +29,7 @@ fn spawn_client(args: &[String], c: &pmix::server::Client) -> std::process::Chil
         .unwrap()
 }
 
-pub(crate) fn run(args: ServerArgs) -> Result<(), Error> {
+pub(crate) async fn run(args: ServerArgs) -> Result<(), Error> {
     let ServerArgs {
         nnodes,
         tempdir: tmpdir,
@@ -45,21 +46,23 @@ pub(crate) fn run(args: ServerArgs) -> Result<(), Error> {
 
     let peer_dir = tmpdir.join("peer-discovery-fence");
     fs::create_dir_all(&peer_dir).unwrap();
-    let peers = DirPeerDiscovery::new(&peer_dir, nnodes);
+    let peers = PeerDiscovery::new(&peer_dir, nnodes);
     let fence = NetFence::new(
         net::SocketAddr::new(net::Ipv6Addr::LOCALHOST.into(), 0),
         &peers,
-    );
+    )
+    .await;
     peers.register(&fence.addr(), node_rank);
 
     let peer_dir = tmpdir.join("peer-discovery-modex");
     fs::create_dir_all(&peer_dir).unwrap();
-    let peers = DirPeerDiscovery::new(&peer_dir, nnodes);
+    let peers = PeerDiscovery::new(&peer_dir, nnodes);
     let modex = NetModex::new(
         net::SocketAddr::new(net::Ipv6Addr::LOCALHOST.into(), 0),
         &peers,
         nprocs,
-    );
+    )
+    .await;
     peers.register(&modex.addr(), node_rank);
     let s = pmix::server::Server::init(fence, modex).unwrap();
 
@@ -70,19 +73,21 @@ pub(crate) fn run(args: ServerArgs) -> Result<(), Error> {
         .map(|i| pmix::server::Client::register(&n, i))
         .collect::<Vec<_>>();
 
-    let mut ps = clients
+    let ps = clients
         .iter()
         .map(|c| spawn_client(&command, c))
         .collect::<Vec<_>>();
 
-    let mut rc = Vec::with_capacity(ps.len());
-    thread::scope(|scope| {
-        let t = scope.spawn(|| rc.extend(ps.iter_mut().map(|p| p.wait())));
-        while !t.is_finished() {
-            s.handle_event(Duration::from_millis(250));
-        }
+    let rcs = tokio::task::spawn_blocking(|| {
+        ps.into_iter()
+            .map(|mut p| p.wait().unwrap())
+            .collect::<Vec<_>>()
     });
+    let run = pin!(s.run());
+    let Either::Left((rcs, _)) = select(rcs, run).await else {
+        panic!("server stopped unexpectedly")
+    };
 
-    assert!(rc.into_iter().all(|rc| rc.is_ok_and(|rc| rc.success())));
+    assert!(rcs.unwrap().into_iter().all(|rc| rc.success()));
     Ok(())
 }

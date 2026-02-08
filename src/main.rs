@@ -2,7 +2,7 @@ use std::{net, process::Command};
 
 use anyhow::Error;
 
-use mpi_k8s::{fence::NetFence, modex::NetModex, peer::DirPeerDiscovery, pmix};
+use mpi_k8s::{fence::NetFence, modex::NetModex, peer::dir::PeerDiscovery, pmix};
 use tempdir::TempDir;
 
 #[tokio::main(flavor = "current_thread")]
@@ -18,18 +18,20 @@ async fn main() -> Result<(), Error> {
     let cmd = cmd.args(args);
 
     let tmpdir = TempDir::new("pmix-k8s").unwrap();
-    let peers = DirPeerDiscovery::new(tmpdir.path(), 1);
+    let peers = PeerDiscovery::new(tmpdir.path(), 1);
     let fence = NetFence::new(
         net::SocketAddr::new(net::Ipv4Addr::LOCALHOST.into(), 0),
         &peers,
-    );
+    )
+    .await;
     peers.register(&fence.addr(), 0);
-    let peers = DirPeerDiscovery::new(tmpdir.path(), 1);
+    let peers = PeerDiscovery::new(tmpdir.path(), 1);
     let modex = NetModex::new(
         net::SocketAddr::new(net::Ipv4Addr::LOCALHOST.into(), 0),
         &peers,
         1,
-    );
+    )
+    .await;
     peers.register(&modex.addr(), 0);
     let mut s = pmix::server::Server::init(fence, modex).unwrap();
     assert!(pmix::is_initialized());

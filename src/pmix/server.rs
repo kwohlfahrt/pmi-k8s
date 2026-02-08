@@ -1,9 +1,10 @@
+use futures::future::select;
+use std::cell::RefCell;
 use std::ffi;
 use std::marker::PhantomData;
+use std::pin::pin;
 use std::ptr;
-use std::sync::mpsc;
-use std::sync::mpsc::RecvTimeoutError;
-use std::time::Duration;
+use tokio::sync::mpsc;
 
 use tempdir::TempDir;
 
@@ -13,7 +14,7 @@ use super::{env, globals, sys, value::Rank};
 pub struct Server<'a> {
     fence: fence::NetFence<'a>,
     modex: modex::NetModex<'a>,
-    rx: mpsc::Receiver<globals::Event>,
+    rx: RefCell<mpsc::UnboundedReceiver<globals::Event>>,
     _tmpdir: TempDir,
     // I'm not sure what PMIx functions are thread-safe, so mark the server as
     // !Sync. Server::init enforces that only one is live at a time.
@@ -39,7 +40,7 @@ impl<'a> Server<'a> {
         if guard.is_some() {
             return Err(globals::AlreadyInitialized());
         }
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::unbounded_channel();
         let status =
             unsafe { sys::PMIx_server_init(&mut module, infos.as_ptr() as *mut _, infos.len()) };
         // FIXME: Don't poison the lock on failure
@@ -49,26 +50,27 @@ impl<'a> Server<'a> {
         Ok(Self {
             fence,
             modex,
-            rx,
+            rx: RefCell::new(rx),
             _tmpdir: tmpdir,
             _marker: globals::Unsync(PhantomData),
         })
     }
 
-    pub fn handle_event(&self, timeout: Duration) {
-        self.fence.handle_conns();
-        self.modex.handle_conns();
-        // mpsc::Receiver only fails if all senders are dropped, which only
-        // happens during our own drop.
-        match self.rx.recv_timeout(timeout) {
-            Ok(globals::Event::Fence { procs, data, cb }) => self.fence.submit(procs, data, cb),
-            Ok(globals::Event::DirectModex { proc, cb }) => self.modex.request(proc, cb),
-            Ok(globals::Event::DirectModexResponse { proc, data }) => {
-                self.modex.send_response(proc, data)
+    async fn handle_events(&self) {
+        loop {
+            match self.rx.borrow_mut().recv().await.unwrap() {
+                globals::Event::Fence { procs, data, cb } => {
+                    self.fence.submit(&procs, data, cb).await
+                }
+                globals::Event::DirectModex { proc, cb } => self.modex.request(proc, cb).await,
             }
-            Err(RecvTimeoutError::Timeout) => (),
-            _ => unimplemented!(),
         }
+    }
+
+    pub async fn run(&self) {
+        let events = pin!(self.handle_events());
+        let modex = pin!(self.modex.serve());
+        select(events, modex).await.factor_first().0
     }
 }
 
@@ -215,26 +217,28 @@ mod test {
     use serial_test::serial;
     use tempdir::TempDir;
 
-    use super::super::super::peer::DirPeerDiscovery;
+    use super::super::super::peer::dir::PeerDiscovery;
     use super::super::is_initialized;
     use super::*;
 
-    #[test]
+    #[tokio::test]
     #[serial(server)]
-    fn test_server_init() {
+    async fn test_server_init() {
         assert!(!is_initialized());
         {
             let tempdir = TempDir::new("server").unwrap();
-            let discovery = DirPeerDiscovery::new(tempdir.path(), 1);
+            let discovery = PeerDiscovery::new(tempdir.path(), 1);
             let fence = fence::NetFence::new(
                 net::SocketAddr::new(net::Ipv4Addr::LOCALHOST.into(), 0),
                 &discovery,
-            );
+            )
+            .await;
             let modex = modex::NetModex::new(
                 net::SocketAddr::new(net::Ipv4Addr::LOCALHOST.into(), 0),
                 &discovery,
                 1,
-            );
+            )
+            .await;
             let _s = Server::init(fence, modex).unwrap();
             assert!(is_initialized());
         }
