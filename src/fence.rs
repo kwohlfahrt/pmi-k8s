@@ -7,16 +7,16 @@ use futures::{StreamExt, TryStreamExt, stream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::{net, time};
 
-use crate::peer::dir::PeerDiscovery;
+use crate::peer::PeerDiscovery;
 use crate::pmix::{globals, sys};
 
-pub struct NetFence<'a> {
+pub struct NetFence<'a, D: PeerDiscovery> {
     listener: net::TcpListener,
-    discovery: &'a PeerDiscovery<'a>,
+    discovery: &'a D,
 }
 
-impl<'a> NetFence<'a> {
-    pub async fn new(addr: SocketAddr, discovery: &'a PeerDiscovery<'a>) -> Self {
+impl<'a, D: PeerDiscovery> NetFence<'a, D> {
+    pub async fn new(addr: SocketAddr, discovery: &'a D) -> Self {
         let listener: net::TcpListener = net::TcpListener::bind(addr).await.unwrap();
         Self {
             listener,
@@ -109,13 +109,14 @@ mod test {
     use std::{collections::HashSet, net::Ipv4Addr};
 
     use super::*;
+    use crate::peer::DirectoryPeers;
     use tempdir::TempDir;
 
     #[tokio::test]
     async fn test_fence() {
         let n = 4;
         let tmpdir = TempDir::new("fence-test").unwrap();
-        let discovery = PeerDiscovery::new(tmpdir.path(), n);
+        let discovery = DirectoryPeers::new(tmpdir.path(), n);
         let fences = join_all((0..n).map(|_| {
             let addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0);
             NetFence::new(addr, &discovery)

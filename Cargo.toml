@@ -1,8 +1,8 @@
 [package]
-name = "mpi-k8s"
+name = "pmi-k8s"
 version = "0.1.0"
 edition = "2024"
-default-run = "mpi-k8s"
+default-run = "pmi-k8s"
 
 [[bin]]
 name = "mock"

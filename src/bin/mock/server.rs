@@ -4,7 +4,7 @@ use std::{ffi::CString, fs, net, path::PathBuf, pin::pin, process::Command};
 
 use anyhow::Error;
 
-use mpi_k8s::{fence::NetFence, modex::NetModex, peer::dir::PeerDiscovery, pmix};
+use pmi_k8s::{fence::NetFence, modex::NetModex, peer, pmix};
 
 #[derive(Debug, Args)]
 pub struct ServerArgs {
@@ -20,7 +20,10 @@ pub struct ServerArgs {
     command: Vec<String>,
 }
 
-fn spawn_client(args: &[String], c: &pmix::server::Client) -> std::process::Child {
+fn spawn_client<D: peer::PeerDiscovery>(
+    args: &[String],
+    c: &pmix::server::Client<D>,
+) -> std::process::Child {
     let mut cmd = Command::new(std::env::current_exe().unwrap());
     cmd.arg("client")
         .args(args)
@@ -46,7 +49,7 @@ pub(crate) async fn run(args: ServerArgs) -> Result<(), Error> {
 
     let peer_dir = tmpdir.join("peer-discovery-fence");
     fs::create_dir_all(&peer_dir).unwrap();
-    let peers = PeerDiscovery::new(&peer_dir, nnodes);
+    let peers = peer::DirectoryPeers::new(&peer_dir, nnodes);
     let fence = NetFence::new(
         net::SocketAddr::new(net::Ipv6Addr::LOCALHOST.into(), 0),
         &peers,
@@ -56,7 +59,7 @@ pub(crate) async fn run(args: ServerArgs) -> Result<(), Error> {
 
     let peer_dir = tmpdir.join("peer-discovery-modex");
     fs::create_dir_all(&peer_dir).unwrap();
-    let peers = PeerDiscovery::new(&peer_dir, nnodes);
+    let peers = peer::DirectoryPeers::new(&peer_dir, nnodes);
     let modex = NetModex::new(
         net::SocketAddr::new(net::Ipv6Addr::LOCALHOST.into(), 0),
         &peers,

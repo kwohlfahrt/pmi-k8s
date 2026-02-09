@@ -4,14 +4,16 @@ use notify::{self, Watcher};
 use std::{collections::HashMap, fs, net, path::Path};
 use tokio::sync::mpsc;
 
-pub struct PeerDiscovery<'a> {
+use super::PeerDiscovery;
+
+pub struct DirectoryPeers<'a> {
     dir: &'a Path,
     nnodes: u32,
 }
 
-impl<'a> PeerDiscovery<'a> {
+impl<'a> DirectoryPeers<'a> {
     pub fn new(dir: &'a Path, nnodes: u32) -> Self {
-        PeerDiscovery { dir, nnodes }
+        DirectoryPeers { dir, nnodes }
     }
 
     fn read_peer(path: &Path) -> net::SocketAddr {
@@ -46,7 +48,14 @@ impl<'a> PeerDiscovery<'a> {
         }
     }
 
-    pub async fn peer(&self, node_rank: u32) -> net::SocketAddr {
+    pub fn register(&self, addr: &net::SocketAddr, node_rank: u32) {
+        let path = self.dir.join(node_rank.to_string());
+        fs::write(path, addr.to_string()).unwrap();
+    }
+}
+
+impl<'a> PeerDiscovery for DirectoryPeers<'a> {
+    async fn peer(&self, node_rank: u32) -> net::SocketAddr {
         let path = self.dir.join(format!("{}", node_rank));
         if path.exists() {
             Self::read_peer(&path)
@@ -55,14 +64,9 @@ impl<'a> PeerDiscovery<'a> {
         }
     }
 
-    pub async fn peers(&self) -> HashMap<u32, net::SocketAddr> {
+    async fn peers(&self) -> HashMap<u32, net::SocketAddr> {
         let peers = (0..self.nnodes).map(async |node_rank| (node_rank, self.peer(node_rank).await));
         join_all(peers).await.into_iter().collect()
-    }
-
-    pub fn register(&self, addr: &net::SocketAddr, node_rank: u32) {
-        let path = self.dir.join(node_rank.to_string());
-        fs::write(path, addr.to_string()).unwrap();
     }
 }
 
@@ -76,7 +80,7 @@ mod test {
     async fn test_dir_discovery() {
         let dir = TempDir::new("discovery-test").unwrap();
         let n = 2;
-        let discovery = PeerDiscovery::new(dir.path(), n);
+        let discovery = DirectoryPeers::new(dir.path(), n);
         let expected = (0..n as u16)
             .map(|i| {
                 (

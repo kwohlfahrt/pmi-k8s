@@ -8,7 +8,7 @@ install_weak_deps=False
 EOF
 
 RUN --mount=type=cache,target=/var/cache/libdnf5 \
-    dnf install -y @development-tools hwloc-devel
+    dnf install -y @development-tools hwloc-devel clang-devel
 
 FROM base AS ompi
 
@@ -50,7 +50,7 @@ set -euo pipefail
 make -j install
 EOF
 
-FROM base
+FROM base AS dev
 
 ENV PATH=/root/.cargo/bin:$PATH PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
 
@@ -63,9 +63,24 @@ rustup component add rustfmt
 EOF
 
 RUN --mount=type=cache,target=/var/cache/libdnf5 \
-    dnf install -y kubectl clang-devel lldb
+    dnf install -y kubectl lldb
 
 COPY --link --from=ompi /usr/local /usr/local
 COPY --link --from=ompi /workspaces/pmix /workspaces/pmix
 COPY --link --from=ompi /workspaces/prrte /workspaces/prrte
 COPY --link --from=ompi /workspaces/open-mpi /workspaces/open-mpi
+
+FROM dev AS build
+
+WORKDIR /workspaces/pmi-k8s
+
+COPY --link . .
+RUN --mount=type=cache,target=/workspaces/pmi-k8s/target \
+    --mount=type=cache,target=/usr/local/cargo/git/db \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo build --bin pmi-k8s --release \
+    && cp target/release/pmi-k8s /usr/local/bin
+
+FROM fedora:43
+
+COPY --link --from=build /usr/local/bin/pmi-k8s /usr/local/bin/pmi-k8s

@@ -9,7 +9,7 @@ use tokio::{
 };
 
 use crate::{
-    peer::dir::PeerDiscovery,
+    peer::PeerDiscovery,
     pmix::{globals, sys},
 };
 
@@ -38,15 +38,15 @@ type RequestFn = unsafe extern "C" fn(
     cbdata: *mut ffi::c_void,
 ) -> sys::pmix_status_t;
 
-pub struct NetModex<'a> {
-    discovery: &'a PeerDiscovery<'a>,
+pub struct NetModex<'a, D: PeerDiscovery> {
+    discovery: &'a D,
     listener: net::TcpListener,
     nproc: u16,
     request_fn: RequestFn,
 }
 
-impl<'a> NetModex<'a> {
-    pub async fn new(addr: SocketAddr, discovery: &'a PeerDiscovery<'a>, nproc: u16) -> Self {
+impl<'a, D: PeerDiscovery> NetModex<'a, D> {
+    pub async fn new(addr: SocketAddr, discovery: &'a D, nproc: u16) -> Self {
         let listener = net::TcpListener::bind(addr).await.unwrap();
         Self {
             listener,
@@ -59,7 +59,7 @@ impl<'a> NetModex<'a> {
     #[cfg(test)]
     async fn with_mock_request(
         addr: SocketAddr,
-        discovery: &'a PeerDiscovery<'a>,
+        discovery: &'a D,
         nproc: u16,
         request_fn: RequestFn,
     ) -> Self {
@@ -157,6 +157,7 @@ impl<'a> NetModex<'a> {
 #[cfg(test)]
 mod test {
     use std::{net::Ipv4Addr, pin::pin};
+    use crate::peer::DirectoryPeers;
 
     use super::*;
     use futures::future::{Either, select};
@@ -182,7 +183,7 @@ mod test {
         let nproc = 4;
 
         let tmpdir = TempDir::new("modex-test").unwrap();
-        let discovery = PeerDiscovery::new(tmpdir.path(), 2);
+        let discovery = DirectoryPeers::new(tmpdir.path(), 2);
         let addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0);
         let sender = NetModex::new(addr, &discovery, nproc).await;
         let responder = NetModex::with_mock_request(addr, &discovery, nproc, request_fn).await;

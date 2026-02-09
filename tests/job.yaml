@@ -1,0 +1,51 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mpi
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "watch", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mpi
+subjects:
+- kind: ServiceAccount
+  name: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mpi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pmi-k8s-test
+spec:
+  completions: 2
+  parallelism: 2
+  completionMode: Indexed
+  activeDeadlineSeconds: 60
+  backoffLimit: 1
+  template:
+    spec:
+      containers:
+        - name: test
+          image: pmi-k8s-test:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - --nproc=2
+            - --nnodes=2
+            - --node-rank=$(JOB_COMPLETION_INDEX)
+            - ./main.py
+            - --
+            - "4"
+          env:
+            - name: JOB_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.labels['batch.kubernetes.io/job-name']
+      restartPolicy: Never

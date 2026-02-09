@@ -8,12 +8,12 @@ use tokio::sync::mpsc;
 
 use tempdir::TempDir;
 
-use super::super::{fence, modex};
+use super::super::{fence, modex, peer};
 use super::{env, globals, sys, value::Rank};
 
-pub struct Server<'a> {
-    fence: fence::NetFence<'a>,
-    modex: modex::NetModex<'a>,
+pub struct Server<'a, D: peer::PeerDiscovery> {
+    fence: fence::NetFence<'a, D>,
+    modex: modex::NetModex<'a, D>,
     rx: RefCell<mpsc::UnboundedReceiver<globals::Event>>,
     _tmpdir: TempDir,
     // I'm not sure what PMIx functions are thread-safe, so mark the server as
@@ -21,10 +21,10 @@ pub struct Server<'a> {
     _marker: globals::Unsync,
 }
 
-impl<'a> Server<'a> {
+impl<'a, D: peer::PeerDiscovery> Server<'a, D> {
     pub fn init(
-        fence: fence::NetFence<'a>,
-        modex: modex::NetModex<'a>,
+        fence: fence::NetFence<'a, D>,
+        modex: modex::NetModex<'a, D>,
     ) -> Result<Self, globals::AlreadyInitialized> {
         let tmpdir = TempDir::new("pmix-server").unwrap();
         let dirname = ffi::CString::new(tmpdir.path().as_os_str().as_encoded_bytes()).unwrap();
@@ -74,7 +74,7 @@ impl<'a> Server<'a> {
     }
 }
 
-impl<'a> Drop for Server<'a> {
+impl<'a, D: peer::PeerDiscovery> Drop for Server<'a, D> {
     fn drop(&mut self) {
         let mut guard = globals::PMIX_STATE.write().unwrap();
         drop(guard.take());
@@ -83,15 +83,15 @@ impl<'a> Drop for Server<'a> {
     }
 }
 
-pub struct Namespace<'a> {
+pub struct Namespace<'a, D: peer::PeerDiscovery> {
     nspace: sys::pmix_nspace_t,
-    server: PhantomData<&'a Server<'a>>,
+    server: PhantomData<&'a Server<'a, D>>,
 }
 
-impl<'a> Namespace<'a> {
+impl<'a, D: peer::PeerDiscovery> Namespace<'a, D> {
     // TODO: This should be a method on Server
     pub fn register(
-        _server: &'a Server,
+        _server: &'a Server<D>,
         namespace: &ffi::CStr,
         hostnames: &[&ffi::CStr],
         nlocalprocs: u16,
@@ -154,7 +154,7 @@ impl<'a> Namespace<'a> {
     }
 }
 
-impl<'a> Drop for Namespace<'a> {
+impl<'a, D: peer::PeerDiscovery> Drop for Namespace<'a, D> {
     fn drop(&mut self) {
         unsafe {
             sys::PMIx_server_deregister_nspace(self.nspace.as_ptr(), None, ptr::null_mut());
@@ -162,13 +162,13 @@ impl<'a> Drop for Namespace<'a> {
     }
 }
 
-pub struct Client<'a> {
+pub struct Client<'a, D: peer::PeerDiscovery> {
     proc: sys::pmix_proc_t,
-    namespace: PhantomData<&'a Namespace<'a>>,
+    namespace: PhantomData<&'a Namespace<'a, D>>,
 }
 
-impl<'a> Client<'a> {
-    pub fn register(namespace: &'a Namespace, rank: u32) -> Self {
+impl<'a, D: peer::PeerDiscovery> Client<'a, D> {
+    pub fn register(namespace: &'a Namespace<D>, rank: u32) -> Self {
         let uid = nix::unistd::geteuid();
         let gid = nix::unistd::getegid();
 
@@ -202,7 +202,7 @@ impl<'a> Client<'a> {
     }
 }
 
-impl<'a> Drop for Client<'a> {
+impl<'a, D: peer::PeerDiscovery> Drop for Client<'a, D> {
     fn drop(&mut self) {
         unsafe {
             sys::PMIx_server_deregister_client(&self.proc, None, ptr::null_mut());
@@ -217,7 +217,7 @@ mod test {
     use serial_test::serial;
     use tempdir::TempDir;
 
-    use super::super::super::peer::dir::PeerDiscovery;
+    use super::super::super::peer::DirectoryPeers;
     use super::super::is_initialized;
     use super::*;
 
@@ -227,7 +227,7 @@ mod test {
         assert!(!is_initialized());
         {
             let tempdir = TempDir::new("server").unwrap();
-            let discovery = PeerDiscovery::new(tempdir.path(), 1);
+            let discovery = DirectoryPeers::new(tempdir.path(), 1);
             let fence = fence::NetFence::new(
                 net::SocketAddr::new(net::Ipv4Addr::LOCALHOST.into(), 0),
                 &discovery,

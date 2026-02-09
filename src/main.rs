@@ -1,54 +1,82 @@
-use std::{net, process::Command};
+use std::{ffi, net, pin::pin, process::Command};
 
 use anyhow::Error;
 
-use mpi_k8s::{fence::NetFence, modex::NetModex, peer::dir::PeerDiscovery, pmix};
-use tempdir::TempDir;
+use clap::Parser;
+use futures::future::{Either, select};
+use pmi_k8s::{
+    fence::NetFence,
+    modex::NetModex,
+    peer::{KubernetesPeers, k8s::PORT},
+    pmix,
+};
+
+#[derive(Parser, Debug)]
+struct Cli {
+    #[arg(long)]
+    nproc: u16,
+    // TODO: Infer from pod spec
+    #[arg(long)]
+    node_rank: u32,
+    // TODO: Infer from job spec
+    #[arg(long)]
+    nnodes: u32,
+    #[arg()]
+    command: String,
+    #[arg(last = true)]
+    args: Vec<String>,
+}
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Error> {
-    // let job_name = "foo";
-    // let pmix_namespace = job_name;
+    let args = Cli::parse();
+    let namespace = c"foo";
 
-    println!("{:?}", pmix::get_version_str());
-
-    let mut args = std::env::args().skip(1);
-    let program = args.next().unwrap();
-    let mut cmd = Command::new(program);
-    let cmd = cmd.args(args);
-
-    let tmpdir = TempDir::new("pmix-k8s").unwrap();
-    let peers = PeerDiscovery::new(tmpdir.path(), 1);
+    let peers = KubernetesPeers::new(args.nnodes).await;
     let fence = NetFence::new(
-        net::SocketAddr::new(net::Ipv4Addr::LOCALHOST.into(), 0),
+        net::SocketAddr::new("0.0.0.0".parse().unwrap(), PORT),
         &peers,
     )
     .await;
-    peers.register(&fence.addr(), 0);
-    let peers = PeerDiscovery::new(tmpdir.path(), 1);
     let modex = NetModex::new(
-        net::SocketAddr::new(net::Ipv4Addr::LOCALHOST.into(), 0),
+        net::SocketAddr::new("0.0.0.0".parse().unwrap(), PORT + 1),
         &peers,
-        1,
+        args.nproc,
     )
     .await;
-    peers.register(&modex.addr(), 0);
-    let mut s = pmix::server::Server::init(fence, modex).unwrap();
-    assert!(pmix::is_initialized());
 
-    let n = 2;
-    let ns = pmix::server::Namespace::register(&mut s, c"foobar", &[c"localhost"], 1);
-    let clients = (0..n)
+    // FIXME: Get from pod names, or remove if not needed
+    let hostnames = (0..args.nnodes)
+        .map(|node_rank| ffi::CString::new(format!("host-{}", node_rank)).unwrap())
+        .collect::<Vec<_>>();
+    let hostname_refs = hostnames.iter().map(|h| h.as_c_str()).collect::<Vec<_>>();
+
+    let s = pmix::server::Server::init(fence, modex).unwrap();
+    let ns = pmix::server::Namespace::register(&s, namespace, &hostname_refs, args.nproc);
+    let clients = ((args.node_rank * args.nproc as u32)
+        ..((args.node_rank + 1) * args.nproc as u32))
         .map(|i| pmix::server::Client::register(&ns, i as u32))
         .collect::<Vec<_>>();
 
-    let mut ps = clients
+    let ps = clients
         .iter()
-        .map(|c| cmd.envs(&c.envs()).spawn().unwrap())
-        .take(2)
+        .map(|c| {
+            let mut cmd = Command::new(&args.command);
+            cmd.envs(&c.envs()).args(&args.args).spawn().unwrap()
+        })
         .collect::<Vec<_>>();
 
-    assert!(ps.iter_mut().all(|p| p.wait().unwrap().success()));
+    let rcs = tokio::task::spawn_blocking(|| {
+        ps.into_iter()
+            .map(|mut p| p.wait().unwrap())
+            .collect::<Vec<_>>()
+    });
+    let run = pin!(s.run());
+    let Either::Left((rcs, _)) = select(rcs, run).await else {
+        panic!("server stopped unexpectedly")
+    };
+
+    assert!(rcs.unwrap().iter().all(|rc| rc.success()));
 
     Ok(())
 }

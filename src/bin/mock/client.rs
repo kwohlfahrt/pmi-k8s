@@ -2,7 +2,7 @@ use anyhow::Error;
 use clap::{Args, Subcommand};
 use mpi::traits::{Communicator, CommunicatorCollectives};
 
-use mpi_k8s::pmix;
+use pmi_k8s::pmix;
 
 #[derive(Debug, Args)]
 pub struct ClientArgs {
