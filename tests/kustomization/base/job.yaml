@@ -13,7 +13,7 @@ spec:
       serviceAccountName: pmi-k8s-test
       containers:
         - name: test
-          image: pmi-k8s-test:latest
+          image: pmi-k8s-mpi:test
           imagePullPolicy: IfNotPresent
           args:
             - --nproc=2
