@@ -1,0 +1,7 @@
+nameSuffix: -dmodex
+
+resources:
+  - ../base
+
+patches:
+  - path: ./job.yaml

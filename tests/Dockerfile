@@ -7,10 +7,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 RUN pip install --disable-pip-version-check --root-user-action=ignore \
     mpi4py numpy
 
-COPY --link --from=pmi-k8s /usr/local/bin/pmi-k8s /usr/local/bin/
-
 WORKDIR /app
 
 COPY ./test.py ./main.py
+
+COPY --link --from=pmi-k8s /usr/local/bin/pmi-k8s /usr/local/bin/
 
 ENTRYPOINT [ "/usr/local/bin/pmi-k8s" ]

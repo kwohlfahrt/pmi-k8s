@@ -1,0 +1,12 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pmi-k8s-test
+spec:
+  template:
+    spec:
+      containers:
+        - name: test
+          env:
+            - name: OMPI_MCA_pmix_base_async_modex
+              value: "1"

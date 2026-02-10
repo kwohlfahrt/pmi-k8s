@@ -1,0 +1,5 @@
+.git/
+Dockerfile
+tests/Dockerfile
+tests/cluster.yaml
+tests/kustomization/
