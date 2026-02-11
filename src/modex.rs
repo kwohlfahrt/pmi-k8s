@@ -10,7 +10,7 @@ use tokio::{
 
 use crate::{
     peer::PeerDiscovery,
-    pmix::{globals, sys},
+    pmix::{char_to_u8, u8_to_char, globals, sys},
 };
 
 unsafe extern "C" fn response(
@@ -23,7 +23,7 @@ unsafe extern "C" fn response(
     let data = if !data.is_null() {
         // data is owned by PMIx library, so we must copy.
         let slice = unsafe { slice::from_raw_parts(data, sz) };
-        slice.to_vec()
+        char_to_u8(slice).to_vec()
     } else {
         Vec::new()
     };
@@ -78,7 +78,7 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
 
     fn serialize_proc(proc: sys::pmix_proc_t) -> Vec<u8> {
         let mut s = Vec::with_capacity(mem::size_of::<sys::pmix_proc_t>());
-        s.extend_from_slice(&proc.nspace);
+        s.extend_from_slice(&char_to_u8(&proc.nspace));
         s.extend_from_slice(&proc.rank.to_be_bytes());
         s
     }
@@ -86,7 +86,7 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
     fn parse_proc(buf: [u8; mem::size_of::<sys::pmix_proc_t>()]) -> sys::pmix_proc_t {
         let (nspace, rank) = buf.split_at(mem::size_of::<sys::pmix_nspace_t>());
         let rank = u32::from_be_bytes(rank.try_into().unwrap());
-        let nspace = nspace.try_into().unwrap();
+        let nspace = u8_to_char(nspace).try_into().unwrap();
         sys::pmix_proc_t { rank, nspace }
     }
 
@@ -118,11 +118,12 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
             return;
         };
         let acc = Box::new(self.request_data(proc).await);
+        let data = u8_to_char(&acc);
         unsafe {
             cbfunc(
                 sys::PMIX_SUCCESS as sys::pmix_status_t,
-                acc.as_ptr(),
-                acc.len(),
+                data.as_ptr(),
+                data.len(),
                 cbdata,
                 Some(globals::release_vec_u8),
                 Box::into_raw(acc) as *mut ffi::c_void,
@@ -156,8 +157,8 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
 
 #[cfg(test)]
 mod test {
-    use std::{net::Ipv4Addr, pin::pin};
     use crate::peer::DirectoryPeers;
+    use std::{net::Ipv4Addr, pin::pin};
 
     use super::*;
     use futures::future::{Either, select};
@@ -172,7 +173,7 @@ mod test {
             return sys::PMIX_SUCCESS as sys::pmix_status_t;
         };
 
-        let mut data: [u8; _] = [1, 2, 3];
+        let mut data: [ffi::c_char; _] = [1, 2, 3];
         let status = sys::PMIX_SUCCESS as sys::pmix_status_t;
         unsafe { cbfunc(status, data.as_mut_ptr(), data.len(), cbdata) };
         sys::PMIX_SUCCESS as sys::pmix_status_t

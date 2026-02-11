@@ -8,7 +8,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::{net, time};
 
 use crate::peer::PeerDiscovery;
-use crate::pmix::{globals, sys};
+use crate::pmix::{char_to_u8, globals, sys, u8_to_char};
 
 pub struct NetFence<'a, D: PeerDiscovery> {
     listener: net::TcpListener,
@@ -33,7 +33,7 @@ impl<'a, D: PeerDiscovery> NetFence<'a, D> {
         let (ptr, _) = data;
         let data = if !data.0.is_null() {
             let slice = unsafe { slice::from_raw_parts(data.0, data.1) };
-            slice.to_vec()
+            char_to_u8(slice).to_vec()
         } else {
             Vec::new()
         };
@@ -91,11 +91,12 @@ impl<'a, D: PeerDiscovery> NetFence<'a, D> {
         };
         let data = Self::read_data(data);
         let acc = Box::new(self.submit_data(procs, &data).await);
+        let data = u8_to_char(&acc);
         unsafe {
             cbfunc(
                 sys::PMIX_SUCCESS as sys::pmix_status_t,
-                acc.as_ptr(),
-                acc.len(),
+                data.as_ptr(),
+                data.len(),
                 cbdata,
                 Some(globals::release_vec_u8),
                 Box::into_raw(acc) as *mut ffi::c_void,

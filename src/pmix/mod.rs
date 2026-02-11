@@ -1,4 +1,4 @@
-use std::ffi;
+use std::{ffi, slice};
 
 pub mod client;
 pub mod env;
@@ -14,4 +14,14 @@ pub fn get_version_str() -> &'static ffi::CStr {
 pub fn is_initialized() -> bool {
     let status = unsafe { sys::PMIx_Initialized() };
     status != 0
+}
+
+pub fn char_to_u8(chars: &[ffi::c_char]) -> &[u8] {
+    let ptr = chars.as_ptr();
+    unsafe { slice::from_raw_parts(ptr as *const u8, chars.len()) }
+}
+
+pub fn u8_to_char(bytes: &[u8]) -> &[ffi::c_char] {
+    let ptr = bytes.as_ptr();
+    unsafe { slice::from_raw_parts(ptr as *const ffi::c_char, bytes.len()) }
 }
