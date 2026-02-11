@@ -1,4 +1,5 @@
 .git/
+.github/
 Dockerfile
 tests/Dockerfile
 tests/cluster.yaml

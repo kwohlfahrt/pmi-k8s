@@ -4,27 +4,39 @@ on:
     branches: [main]
 
 jobs:
-  test-publish:
-    runs-on: ubuntu-latest
+  test:
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          # - platform: linux/arm64
+          #   runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    services:
+      registry:
+        image: registry:3
+        ports: ["5000:5000"]
     steps:
       - uses: actions/checkout@v6
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
-        # Build dev image, to run the tests in
+        with:
+          driver-opts: network=host
+      # Build dev image, to run the tests in
       - uses: docker/build-push-action@v6
         with:
           load: true
           tags: pmi-k8s:dev
           target: dev
           cache-from: type=gha
-        # Build final image, to create the pmi-k8s binary
+      # Build final image, which is a dependency of the test image
       - uses: docker/build-push-action@v6
         with:
-          load: true
-          tags: pmi-k8s
+          push: true
+          tags: localhost:5000/pmi-k8s
           cache-from: type=gha
           cache-to: type=gha,mode=max
-        # Build test workload
+      # Build test image, for k8s tests
       - uses: docker/build-push-action@v6
         with:
           context: ./tests
@@ -32,14 +44,19 @@ jobs:
           tags: pmi-k8s-mpi:test
           cache-from: type=gha,scope=mpi-test
           cache-to: type=gha,mode=max,scope=mpi-test
+          build-contexts: |
+            pmi-k8s=docker-image://localhost:5000/pmi-k8s
       - run: |
+          export DOCKER_ADDR=$(ip --json addr show docker0 | yq -r '.[].addr_info[] | select(.family == "inet").local')
+          yq --inplace '.networking.apiServerAddress = strenv(DOCKER_ADDR)' ./tests/cluster.yaml
           kind create cluster --config=./tests/cluster.yaml --kubeconfig=./kubeconfig.yaml
           kind load docker-image pmi-k8s-mpi:test
-          yq --inplace '.clusters[0].cluster.server = (.clusters[0].cluster.server | sub("127\.0\.0\.1", "host.docker.internal"))' kubeconfig.yaml
+          yq --inplace '.clusters[0].cluster.server = (.clusters[0].cluster.server | sub(strenv(DOCKER_ADDR), "host.docker.internal"))' ./kubeconfig.yaml
       - run: |
           docker run --rm -i \
             --env KUBECONFIG=/app/pmi-k8s/kubeconfig.yaml \
-            --mount type=bind,src=$(pwd),dst=/app/pmi-k8s,ro \
+            --mount type=bind,src=$(pwd),dst=/app/pmi-k8s \
             --mount type=volume,dst=/app/pmi-k8s/target \
             --workdir /app/pmi-k8s \
+            --add-host=host.docker.internal:host-gateway \
             pmi-k8s:dev cargo test --features=test-bins
