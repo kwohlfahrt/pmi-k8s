@@ -17,8 +17,6 @@ spec:
           imagePullPolicy: IfNotPresent
           args:
             - --nproc=2
-            - --nnodes=2
-            - --node-rank=$(JOB_COMPLETION_INDEX)
             - ./main.py
             - --
             - "4"

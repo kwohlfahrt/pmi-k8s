@@ -15,12 +15,6 @@ use pmi_k8s::{
 struct Cli {
     #[arg(long)]
     nproc: u16,
-    // TODO: Infer from pod spec
-    #[arg(long)]
-    node_rank: u32,
-    // TODO: Infer from job spec
-    #[arg(long)]
-    nnodes: u32,
     #[arg()]
     command: String,
     #[arg(last = true)]
@@ -32,7 +26,7 @@ async fn main() -> Result<(), Error> {
     let args = Cli::parse();
     let namespace = c"foo";
 
-    let peers = KubernetesPeers::new(args.nnodes).await;
+    let peers = KubernetesPeers::new().await;
     let fence = NetFence::new(
         net::SocketAddr::new("0.0.0.0".parse().unwrap(), PORT),
         &peers,
@@ -46,15 +40,15 @@ async fn main() -> Result<(), Error> {
     .await;
 
     // FIXME: Get from pod names, or remove if not needed
-    let hostnames = (0..args.nnodes)
+    let hostnames = (0..peers.nnodes())
         .map(|node_rank| ffi::CString::new(format!("host-{}", node_rank)).unwrap())
         .collect::<Vec<_>>();
     let hostname_refs = hostnames.iter().map(|h| h.as_c_str()).collect::<Vec<_>>();
 
     let s = pmix::server::Server::init(fence, modex).unwrap();
     let ns = pmix::server::Namespace::register(&s, namespace, &hostname_refs, args.nproc);
-    let clients = ((args.node_rank * args.nproc as u32)
-        ..((args.node_rank + 1) * args.nproc as u32))
+    let clients = peers
+        .local_ranks(args.nproc as u32)
         .map(|i| pmix::server::Client::register(&ns, i as u32))
         .collect::<Vec<_>>();
 

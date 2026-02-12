@@ -40,8 +40,6 @@ spec:
           image: my-mpi-image
           args:
             - --nproc=2
-            - --nnodes=2
-            - --node-rank=$(JOB_COMPLETION_INDEX)
             - --
             # Remaining args are the command to be executed `--nproc` times in this pod
           env:
