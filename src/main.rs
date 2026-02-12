@@ -1,4 +1,4 @@
-use std::{ffi, net, pin::pin, process::Command};
+use std::{net, pin::pin, process::Command};
 
 use anyhow::Error;
 
