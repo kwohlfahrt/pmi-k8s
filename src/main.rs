@@ -39,10 +39,7 @@ async fn main() -> Result<(), Error> {
     )
     .await;
 
-    // FIXME: Get from pod names, or remove if not needed
-    let hostnames = (0..peers.nnodes())
-        .map(|node_rank| ffi::CString::new(format!("host-{}", node_rank)).unwrap())
-        .collect::<Vec<_>>();
+    let hostnames = peers.hostnames().collect::<Vec<_>>();
     let hostname_refs = hostnames.iter().map(|h| h.as_c_str()).collect::<Vec<_>>();
 
     let s = pmix::server::Server::init(fence, modex).unwrap();

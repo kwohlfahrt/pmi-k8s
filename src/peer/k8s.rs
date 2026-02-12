@@ -1,5 +1,5 @@
 use futures::{StreamExt, TryStreamExt};
-use std::{collections::HashMap, env, net, pin::pin};
+use std::{collections::HashMap, env, ffi, net, pin::pin};
 
 use k8s_openapi::api::{batch::v1::Job, core::v1::Pod};
 use kube::{self, Api, Client, Config, runtime::watcher};
@@ -54,8 +54,14 @@ impl KubernetesPeers {
         self.node_rank
     }
 
+    // TODO: Standardize more methods in the PeerDiscovery interface
     pub fn local_ranks(&self, nproc: u32) -> impl Iterator<Item = u32> {
         (self.node_rank * nproc)..((self.node_rank + 1) * nproc)
+    }
+
+    pub fn hostnames(&self) -> impl Iterator<Item = ffi::CString> {
+        (0..self.nnodes)
+            .map(|rank| ffi::CString::new(format!("{}-{}", self.job_name, rank)).unwrap())
     }
 
     fn label_selector(&self, node_rank: Option<u32>) -> String {
