@@ -1,3 +1,5 @@
+name: Build & Publish
+
 on:
   pull_request: ~
   push:
@@ -8,10 +10,10 @@ jobs:
     strategy:
       matrix:
         include:
-          - platform: linux/amd64
+          - arch: amd64
             runner: ubuntu-24.04
-          # - platform: linux/arm64
-          #   runner: ubuntu-24.04-arm
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     services:
       registry:
@@ -28,24 +30,27 @@ jobs:
           load: true
           tags: pmi-k8s:dev
           target: dev
-          cache-from: type=gha
+          platforms: linux/${{ matrix.arch }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
       # Build final image, which is a dependency of the test image
       - uses: docker/build-push-action@v6
         with:
           push: true
           tags: localhost:5000/pmi-k8s
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          platforms: linux/${{ matrix.arch }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
       # Build test image, for k8s tests
       - uses: docker/build-push-action@v6
         with:
           context: ./tests
           load: true
           tags: pmi-k8s-mpi:test
-          cache-from: type=gha,scope=mpi-test
-          cache-to: type=gha,mode=max,scope=mpi-test
+          platforms: linux/${{ matrix.arch }}
+          cache-from: type=gha,scope=mpi-test-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=mpi-test-${{ matrix.arch }}
           build-contexts: |
-            pmi-k8s=docker-image://localhost:5000/pmi-k8s
+            ghcr.io/kwohlfahrt/pmi-k8s=docker-image://localhost:5000/pmi-k8s
       - run: |
           export DOCKER_ADDR=$(ip --json addr show docker0 | yq -r '.[].addr_info[] | select(.family == "inet").local')
           yq --inplace '.networking.apiServerAddress = strenv(DOCKER_ADDR)' ./tests/cluster.yaml
@@ -60,3 +65,30 @@ jobs:
             --workdir /app/pmi-k8s \
             --add-host=host.docker.internal:host-gateway \
             pmi-k8s:dev cargo test --features=test-bins
+
+  publish:
+    needs: [test]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/kwohlfahrt/pmi-k8s
+          tags: |
+            type=ref,event=pr
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
+      # Build multi-platform image. This should be reasonably efficient due to
+      # using the cache from the test stage, but it should be possible to upload
+      # image artifacts and simply assemble them here.
+      - uses: docker/build-push-action@v6
+        with:
+          push: false # TODO: Enable if everything looks good
+          tags: ${{ steps.meta.output.tags }}
+          labels: ${{ steps.meta.output.labels }}
+          platforms: linux/amd64,linux/arm64
+          cache-from: |
+            type=gha,scope=amd64
+            type=gha,scope=arm64

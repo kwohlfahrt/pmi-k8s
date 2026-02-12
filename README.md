@@ -40,6 +40,7 @@ spec:
           image: my-mpi-image
           args:
             - --nproc=2
+            - my-app
             - --
             # Remaining args are the command to be executed `--nproc` times in this pod
           env:
