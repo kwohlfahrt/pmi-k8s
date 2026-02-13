@@ -77,6 +77,7 @@ jobs:
           images: ghcr.io/kwohlfahrt/pmi-k8s
           tags: |
             type=ref,event=pr
+            type=edge,branch=main
             type=semver,pattern=v{{version}}
             type=semver,pattern=v{{major}}.{{minor}}
             type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
