@@ -35,18 +35,23 @@ RUN <<EOF
 set -euo pipefail
 
 ./autogen.pl
-./configure --prefix=/usr/local CFLAGS="-g -O0"
+./configure --with-pmix=/usr/local/ --prefix=/usr/local CFLAGS="-g -O0"
 make -j install
 EOF
 
 WORKDIR /workspaces/open-mpi
-RUN git clone --depth=1 --recurse-submodules --branch=v5.0.9 https://github.com/open-mpi/ompi.git .
+RUN <<EOF
+set -euo pipefail
+
+git clone --depth=1 --branch=v5.0.9 https://github.com/open-mpi/ompi.git .
+git submodule update --init --recursive -- config/oac
+EOF
 
 RUN <<EOF
 set -euo pipefail
 
-./autogen.pl
-./configure --prefix=/usr/local CFLAGS="-g -O0"
+./autogen.pl --no-3rdparty=pmix,prrte
+./configure --with-pmix=external --with-prrte=external --prefix=/usr/local CFLAGS="-g -O0"
 make -j install
 EOF
 
