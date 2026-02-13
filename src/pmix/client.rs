@@ -37,6 +37,7 @@ impl Client {
         };
         // FIXME: Don't poison the mutes on init error
         assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
+        // SAFETY: `proc` is initialized by `PMIx_Init`
         let proc = unsafe { proc.assume_init() };
         *guard = Some(globals::State::Client);
 
@@ -51,11 +52,10 @@ impl Client {
     }
 
     pub fn namespace(&self) -> &CStr {
-        let namespace = self.proc.nspace;
-        let namespace =
-            unsafe { std::slice::from_raw_parts(namespace.as_ptr() as *const u8, namespace.len()) };
+        let namespace = super::char_to_u8(&self.proc.nspace);
 
         // PMIx initializes the namespace, so it is guaranteed to be valid
+        #[allow(clippy::unwrap_used)]
         CStr::from_bytes_until_nul(namespace).unwrap()
     }
 

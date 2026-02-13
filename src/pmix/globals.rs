@@ -35,7 +35,11 @@ pub struct AlreadyInitialized();
 pub struct Unsync(pub PhantomData<*const ()>);
 unsafe impl Send for Unsync {}
 
+/// # Safety
+///
+/// `cbdata` must be a pointer created from `Box<Vec<u8>>::into_raw()`
 pub unsafe extern "C" fn release_vec_u8(cbdata: *mut ffi::c_void) {
+    // SAFETY: The inverse of the creation of `cbdata`
     let data = unsafe { Box::from_raw(cbdata as *mut Vec<u8>) };
     drop(data)
 }
@@ -84,12 +88,14 @@ unsafe extern "C" fn fence_nb(
     let guard = PMIX_STATE.read().unwrap();
 
     if let Some(State::Server(ref s)) = *guard {
-        // At least one proc must be participating in the fence, so procs must be valid
+        // SAFETY: At least one proc must be participating in the fence, so procs must be valid
         let procs = unsafe { slice::from_raw_parts(procs, nprocs) }.into();
         let cb = (cbfunc, cbdata);
         let data = (data, ndata);
-        // mpsc::Sender only fails to send if the receiver is dropped. This only
-        // happens in Server::drop, which also clears PMIX_STATE state.
+        // mpsc::UnboundedSender::send() only fails if the receiver is dropped,
+        // which only happens in Server::drop, which also clears PMIX_STATE,
+        // making this call unreachable.
+        #[allow(clippy::unwrap_used)]
         s.send(Event::Fence { procs, data, cb }).unwrap();
         sys::PMIX_SUCCESS as sys::pmix_status_t
     } else {
@@ -118,6 +124,7 @@ unsafe extern "C" fn direct_modex(
     let guard = PMIX_STATE.read().unwrap();
 
     if let Some(State::Server(ref s)) = *guard {
+        // SAFETY: `proc` is passed to us by libpmix, assume it is valid.
         let proc = unsafe { *proc };
         let cb = (cbfunc, cbdata);
         // mpsc::Sender only fails to send if the receiver is dropped. This only
