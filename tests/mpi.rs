@@ -9,7 +9,7 @@ fn test_mpi(envs: Vec<(&str, &str)>) {
     let nnodes = 2;
     let nprocs = 2;
     let mut ps = (0..nnodes)
-        .map(|i| {
+        .map(|_| {
             let expected_size = (nnodes * nprocs).to_string();
 
             let mut cmd = Command::new(program);
@@ -18,7 +18,6 @@ fn test_mpi(envs: Vec<(&str, &str)>) {
                 .arg(format!("--tempdir={}", tempdir.path().to_str().unwrap()))
                 .arg(format!("--nnodes={}", nnodes))
                 .arg(format!("--nprocs={}", nprocs))
-                .arg(format!("--node-rank={}", i))
                 .args(["--", "mpi", &expected_size]);
             cmd.spawn().unwrap()
         })

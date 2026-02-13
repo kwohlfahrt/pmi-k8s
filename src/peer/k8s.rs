@@ -1,7 +1,7 @@
 use futures::{StreamExt, TryStreamExt};
-use std::{collections::HashMap, env, net, pin::pin};
+use std::{collections::HashMap, env, ffi, net, pin::pin};
 
-use k8s_openapi::api::core::v1::Pod;
+use k8s_openapi::api::{batch::v1::Job, core::v1::Pod};
 use kube::{self, Api, Client, Config, runtime::watcher};
 
 use super::PeerDiscovery;
@@ -9,8 +9,8 @@ use super::PeerDiscovery;
 pub struct KubernetesPeers {
     pods: kube::Api<Pod>,
     job_name: String,
-    // TODO: Derive this from job definition
     nnodes: u32,
+    node_rank: u32,
 }
 
 const NAME_LABEL: &str = "batch.kubernetes.io/job-name";
@@ -19,15 +19,30 @@ const RANK_LABEL: &str = "batch.kubernetes.io/job-completion-index";
 pub const PORT: u16 = 5000;
 
 impl KubernetesPeers {
-    pub async fn new(nnodes: u32) -> Self {
-        let config = Config::infer().await.unwrap();
-        let client = Client::try_from(config).unwrap();
-        let pods = Api::<Pod>::default_namespaced(client);
+    pub async fn new() -> Self {
         let job_name = env::var("JOB_NAME").unwrap();
+        let node_rank = env::var("JOB_COMPLETION_INDEX").unwrap().parse().unwrap();
+        let config = Config::infer().await.unwrap();
+        Self::new_with_config(job_name, node_rank, config).await
+    }
+
+    async fn new_with_config(job_name: String, node_rank: u32, config: Config) -> Self {
+        let client = Client::try_from(config).unwrap();
+        let pods = Api::<Pod>::default_namespaced(client.clone());
+        let jobs = Api::<Job>::default_namespaced(client);
+        let nnodes = jobs
+            .get(&job_name)
+            .await
+            .unwrap()
+            .spec
+            .and_then(|s| s.parallelism)
+            .unwrap() as u32;
+
         Self {
             pods,
             job_name,
             nnodes,
+            node_rank,
         }
     }
 
@@ -82,5 +97,14 @@ impl PeerDiscovery for KubernetesPeers {
             peers.insert(rank, net::SocketAddr::new(pod_ip, PORT));
         }
         peers
+    }
+
+    fn local_ranks(&self, nproc: u16) -> impl Iterator<Item = u32> {
+        (self.node_rank * nproc as u32)..((self.node_rank + 1) * nproc as u32)
+    }
+
+    fn hostnames(&self) -> impl Iterator<Item = ffi::CString> {
+        (0..self.nnodes)
+            .map(|rank| ffi::CString::new(format!("{}-{}", self.job_name, rank)).unwrap())
     }
 }

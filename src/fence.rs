@@ -123,8 +123,8 @@ mod test {
             NetFence::new(addr, &discovery)
         }))
         .await;
-        for (i, f) in fences.iter().enumerate() {
-            discovery.register(&f.addr(), i as u32);
+        for f in fences.iter() {
+            discovery.register(&f.addr());
         }
         let procs = [sys::pmix_proc_t {
             nspace: [0; _],
