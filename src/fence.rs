@@ -25,6 +25,8 @@ impl<'a, D: PeerDiscovery> NetFence<'a, D> {
     }
 
     pub fn addr(&self) -> SocketAddr {
+        // We know we have bound a local socket, so this can be unwrapped.
+        #[allow(clippy::unwrap_used)]
         self.listener.local_addr().unwrap()
     }
 

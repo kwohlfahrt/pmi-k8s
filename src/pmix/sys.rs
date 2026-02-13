@@ -3,5 +3,6 @@
 #![allow(non_snake_case)]
 #![allow(unused)]
 #![allow(unnecessary_transmutes)]
+#![allow(clippy::missing_safety_doc)]
 
 include!(concat!(env!("OUT_DIR"), "/bindings_pmix.rs"));
