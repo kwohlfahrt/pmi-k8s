@@ -1,5 +1,5 @@
-use std::{net, pin::pin, process::Command};
 use clap::Parser;
+use std::{net, pin::pin, process::Command};
 
 use anyhow::Error;
 
@@ -29,7 +29,8 @@ async fn main() -> Result<(), Error> {
         &peers,
         args.nproc,
     )
-    .await;
+    .await
+    .unwrap();
 
     let hostnames = peers.hostnames().collect::<Vec<_>>();
     let hostname_refs = hostnames.iter().map(|h| h.as_c_str()).collect::<Vec<_>>();

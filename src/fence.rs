@@ -66,7 +66,8 @@ impl<'a, D: PeerDiscovery> NetFence<'a, D> {
                 Err(e) => return Err(e),
             }
         };
-        s.write_all(data).await.map(|_| ())
+        s.write_all(data).await;
+        Ok(())
     }
 
     async fn submit_data(&self, procs: &[sys::pmix_proc_t], data: &[u8]) -> io::Result<Vec<u8>> {

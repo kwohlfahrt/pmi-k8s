@@ -1,9 +1,9 @@
 use futures::future::select;
 use std::cell::RefCell;
-use std::ffi;
 use std::marker::PhantomData;
 use std::pin::pin;
 use std::ptr;
+use std::{ffi, io};
 use tokio::sync::mpsc;
 
 use tempdir::TempDir;
@@ -56,18 +56,18 @@ impl<'a, D: peer::PeerDiscovery> Server<'a, D> {
         })
     }
 
-    async fn handle_events(&self) {
+    async fn handle_events(&self) -> io::Result<()> {
         loop {
             match self.rx.borrow_mut().recv().await.unwrap() {
                 globals::Event::Fence { procs, data, cb } => {
-                    self.fence.submit(&procs, data, cb).await.unwrap()
+                    self.fence.submit(&procs, data, cb).await?
                 }
-                globals::Event::DirectModex { proc, cb } => self.modex.request(proc, cb).await,
+                globals::Event::DirectModex { proc, cb } => self.modex.request(proc, cb).await?,
             }
         }
     }
 
-    pub async fn run(&self) {
+    pub async fn run(&self) -> io::Result<()> {
         let events = pin!(self.handle_events());
         let modex = pin!(self.modex.serve());
         select(events, modex).await.factor_first().0
@@ -239,7 +239,8 @@ mod test {
                 &discovery,
                 1,
             )
-            .await;
+            .await
+            .unwrap();
             let _s = Server::init(fence, modex).unwrap();
             assert!(is_initialized());
         }

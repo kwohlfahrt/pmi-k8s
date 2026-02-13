@@ -15,6 +15,7 @@ pub struct Cli {
     pub args: Vec<String>,
 }
 
+#[allow(clippy::unwrap_used)]
 #[cfg(test)]
 mod test {
     use super::*;
