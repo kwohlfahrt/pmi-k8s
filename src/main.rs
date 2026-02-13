@@ -1,25 +1,16 @@
 use std::{net, pin::pin, process::Command};
+use clap::Parser;
 
 use anyhow::Error;
 
-use clap::Parser;
 use futures::future::{Either, select};
 use pmi_k8s::{
+    Cli,
     fence::NetFence,
     modex::NetModex,
     peer::{KubernetesPeers, PeerDiscovery, k8s::PORT},
     pmix,
 };
-
-#[derive(Parser, Debug)]
-struct Cli {
-    #[arg(long)]
-    nproc: u16,
-    #[arg()]
-    command: String,
-    #[arg(last = true)]
-    args: Vec<String>,
-}
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Error> {

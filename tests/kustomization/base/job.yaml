@@ -18,7 +18,6 @@ spec:
           args:
             - --nproc=2
             - ./main.py
-            - --
             - "4"
           env:
             - name: JOB_NAME

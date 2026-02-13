@@ -11,7 +11,8 @@ server using the [OpenPMIx reference library][OpenPMIx].
 
 ## Usage
 
-The `pmi-k8s` binary must be included in your container image:
+The `pmi-k8s` binary must be included in your container image, where
+`my-mpi-base` is the image containing your MPI program:
 
 ```Dockerfile
 FROM my-mpi-base AS my-mpi-image
@@ -40,7 +41,6 @@ spec:
           image: my-mpi-image
           args:
             - --nproc=2
-            - my-app
             - --
             # Remaining args are the command to be executed `--nproc` times in this pod
           env:
