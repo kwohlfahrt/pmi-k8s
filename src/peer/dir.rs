@@ -1,7 +1,14 @@
 // FIXME: This is only used in testing, make the dependency dev-only
 use futures::future::join_all;
 use notify::{self, Watcher};
-use std::{collections::HashMap, fs, net, path::Path};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    ffi, fs,
+    io::{self, Write},
+    net,
+    path::Path,
+};
 use tokio::sync::mpsc;
 
 use super::PeerDiscovery;
@@ -9,11 +16,16 @@ use super::PeerDiscovery;
 pub struct DirectoryPeers<'a> {
     dir: &'a Path,
     nnodes: u32,
+    node_rank: RefCell<Option<u32>>,
 }
 
 impl<'a> DirectoryPeers<'a> {
     pub fn new(dir: &'a Path, nnodes: u32) -> Self {
-        DirectoryPeers { dir, nnodes }
+        DirectoryPeers {
+            dir,
+            nnodes,
+            node_rank: RefCell::new(None),
+        }
     }
 
     fn read_peer(path: &Path) -> net::SocketAddr {
@@ -48,9 +60,25 @@ impl<'a> DirectoryPeers<'a> {
         }
     }
 
-    pub fn register(&self, addr: &net::SocketAddr, node_rank: u32) {
-        let path = self.dir.join(node_rank.to_string());
-        fs::write(path, addr.to_string()).unwrap();
+    pub fn register(&self, addr: &net::SocketAddr) {
+        let (node_rank, mut f) = (0..self.nnodes)
+            .map(|node_rank| {
+                (
+                    node_rank,
+                    fs::File::create_new(self.dir.join(node_rank.to_string())),
+                )
+            })
+            .filter_map(|(node_rank, f)| match f {
+                Ok(f) => Some(Ok((node_rank, f))),
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => None,
+                Err(e) => Some(Err(e)),
+            })
+            .next()
+            .expect("All nodes already registered")
+            .expect("Error registering node");
+
+        f.write(addr.to_string().as_bytes()).unwrap();
+        *self.node_rank.borrow_mut() = Some(node_rank);
     }
 }
 
@@ -68,10 +96,22 @@ impl<'a> PeerDiscovery for DirectoryPeers<'a> {
         let peers = (0..self.nnodes).map(async |node_rank| (node_rank, self.peer(node_rank).await));
         join_all(peers).await.into_iter().collect()
     }
+
+    fn local_ranks(&self, nprocs: u16) -> impl Iterator<Item = u32> {
+        let node_rank = self.node_rank.borrow().expect("Node is not registered");
+        (node_rank * nprocs as u32)..((node_rank + 1) * nprocs as u32)
+    }
+
+    fn hostnames(&self) -> impl Iterator<Item = std::ffi::CString> {
+        // These hostnames don't actually resolve, but that doesn't seem to matter.
+        (0..self.nnodes).map(|rank| ffi::CString::new(format!("mpi-{}", rank)).unwrap())
+    }
 }
 
 #[cfg(test)]
 mod test {
+    use std::collections::HashSet;
+
     use super::*;
 
     use tempdir::TempDir;
@@ -82,19 +122,18 @@ mod test {
         let n = 2;
         let discovery = DirectoryPeers::new(dir.path(), n);
         let expected = (0..n as u16)
-            .map(|i| {
-                (
-                    i as u32,
-                    net::SocketAddr::new(net::Ipv4Addr::new(127, 0, 0, 1).into(), 5000 + i),
-                )
-            })
-            .collect::<HashMap<u32, _>>();
+            .map(|i| net::SocketAddr::new(net::Ipv4Addr::new(127, 0, 0, 1).into(), 5000 + i))
+            .collect::<HashSet<_>>();
 
-        for (i, addr) in &expected {
-            discovery.register(addr, *i);
+        for addr in &expected {
+            discovery.register(addr);
         }
 
-        let peers = discovery.peers();
-        assert_eq!(peers.await, expected);
+        let peers = discovery
+            .peers()
+            .await
+            .into_values()
+            .collect::<HashSet<_>>();
+        assert_eq!(peers, expected);
     }
 }

@@ -46,24 +46,6 @@ impl KubernetesPeers {
         }
     }
 
-    pub fn nnodes(&self) -> u32 {
-        self.nnodes
-    }
-
-    pub fn node_rank(&self) -> u32 {
-        self.node_rank
-    }
-
-    // TODO: Standardize more methods in the PeerDiscovery interface
-    pub fn local_ranks(&self, nproc: u32) -> impl Iterator<Item = u32> {
-        (self.node_rank * nproc)..((self.node_rank + 1) * nproc)
-    }
-
-    pub fn hostnames(&self) -> impl Iterator<Item = ffi::CString> {
-        (0..self.nnodes)
-            .map(|rank| ffi::CString::new(format!("{}-{}", self.job_name, rank)).unwrap())
-    }
-
     fn label_selector(&self, node_rank: Option<u32>) -> String {
         if let Some(node_rank) = node_rank {
             format!(
@@ -115,5 +97,14 @@ impl PeerDiscovery for KubernetesPeers {
             peers.insert(rank, net::SocketAddr::new(pod_ip, PORT));
         }
         peers
+    }
+
+    fn local_ranks(&self, nproc: u16) -> impl Iterator<Item = u32> {
+        (self.node_rank * nproc as u32)..((self.node_rank + 1) * nproc as u32)
+    }
+
+    fn hostnames(&self) -> impl Iterator<Item = ffi::CString> {
+        (0..self.nnodes)
+            .map(|rank| ffi::CString::new(format!("{}-{}", self.job_name, rank)).unwrap())
     }
 }

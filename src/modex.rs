@@ -10,7 +10,7 @@ use tokio::{
 
 use crate::{
     peer::PeerDiscovery,
-    pmix::{char_to_u8, u8_to_char, globals, sys},
+    pmix::{char_to_u8, globals, sys, u8_to_char},
 };
 
 unsafe extern "C" fn response(
@@ -188,8 +188,8 @@ mod test {
         let addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0);
         let sender = NetModex::new(addr, &discovery, nproc).await;
         let responder = NetModex::with_mock_request(addr, &discovery, nproc, request_fn).await;
-        discovery.register(&sender.addr(), 0);
-        discovery.register(&responder.addr(), 1);
+        discovery.register(&sender.addr());
+        discovery.register(&responder.addr());
 
         let proc = sys::pmix_proc_t {
             nspace: [0; _],

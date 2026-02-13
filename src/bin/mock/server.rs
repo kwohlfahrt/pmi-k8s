@@ -4,14 +4,17 @@ use std::{ffi::CString, fs, net, path::PathBuf, pin::pin, process::Command};
 
 use anyhow::Error;
 
-use pmi_k8s::{fence::NetFence, modex::NetModex, peer, pmix};
+use pmi_k8s::{
+    fence::NetFence,
+    modex::NetModex,
+    peer::{self, PeerDiscovery},
+    pmix,
+};
 
 #[derive(Debug, Args)]
 pub struct ServerArgs {
     #[arg(long)]
     tempdir: PathBuf,
-    #[arg(long)]
-    node_rank: u32,
     #[arg(long)]
     nnodes: u32,
     #[arg(long)]
@@ -36,16 +39,11 @@ pub(crate) async fn run(args: ServerArgs) -> Result<(), Error> {
     let ServerArgs {
         nnodes,
         tempdir: tmpdir,
-        node_rank,
         nprocs,
         command,
     } = args;
 
     let namespace = "foo";
-    let hostnames = (0..nnodes)
-        .map(|node_rank| CString::new(format!("host-{}", node_rank)).unwrap())
-        .collect::<Vec<_>>();
-    let hostnames = hostnames.iter().map(|h| h.as_c_str()).collect::<Vec<_>>();
 
     let peer_dir = tmpdir.join("peer-discovery-fence");
     fs::create_dir_all(&peer_dir).unwrap();
@@ -55,7 +53,7 @@ pub(crate) async fn run(args: ServerArgs) -> Result<(), Error> {
         &peers,
     )
     .await;
-    peers.register(&fence.addr(), node_rank);
+    peers.register(&fence.addr());
 
     let peer_dir = tmpdir.join("peer-discovery-modex");
     fs::create_dir_all(&peer_dir).unwrap();
@@ -66,13 +64,15 @@ pub(crate) async fn run(args: ServerArgs) -> Result<(), Error> {
         nprocs,
     )
     .await;
-    peers.register(&modex.addr(), node_rank);
+    peers.register(&modex.addr());
     let s = pmix::server::Server::init(fence, modex).unwrap();
 
+    let hostnames = peers.hostnames().collect::<Vec<_>>();
+    let hostnames = hostnames.iter().map(|h| h.as_c_str()).collect::<Vec<_>>();
     let namespace = &CString::new(namespace).unwrap();
     let n = pmix::server::Namespace::register(&s, namespace, &hostnames, nprocs);
-    let clients = ((node_rank * nprocs as u32)..((node_rank + 1) * nprocs as u32))
-        .into_iter()
+    let clients = peers
+        .local_ranks(nprocs)
         .map(|i| pmix::server::Client::register(&n, i))
         .collect::<Vec<_>>();
 

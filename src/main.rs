@@ -7,7 +7,7 @@ use futures::future::{Either, select};
 use pmi_k8s::{
     fence::NetFence,
     modex::NetModex,
-    peer::{KubernetesPeers, k8s::PORT},
+    peer::{KubernetesPeers, PeerDiscovery, k8s::PORT},
     pmix,
 };
 
@@ -45,7 +45,7 @@ async fn main() -> Result<(), Error> {
     let s = pmix::server::Server::init(fence, modex).unwrap();
     let ns = pmix::server::Namespace::register(&s, namespace, &hostname_refs, args.nproc);
     let clients = peers
-        .local_ranks(args.nproc as u32)
+        .local_ranks(args.nproc)
         .map(|i| pmix::server::Client::register(&ns, i as u32))
         .collect::<Vec<_>>();
 

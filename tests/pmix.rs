@@ -12,7 +12,6 @@ fn test_client() {
         .arg(format!("--tempdir={}", tempdir.path().to_str().unwrap()))
         .arg(format!("--nnodes={}", 1))
         .arg(format!("--nprocs={}", 1))
-        .arg(format!("--node-rank={}", 0))
         .args(["--", "pmix"]);
     let mut p = cmd.spawn().unwrap();
     let rc = p.wait().unwrap();
