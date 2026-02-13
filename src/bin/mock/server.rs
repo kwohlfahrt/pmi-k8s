@@ -52,7 +52,8 @@ pub(crate) async fn run(args: ServerArgs) -> Result<(), Error> {
         net::SocketAddr::new(net::Ipv6Addr::LOCALHOST.into(), 0),
         &peers,
     )
-    .await;
+    .await
+    .unwrap();
     peers.register(&fence.addr());
 
     let peer_dir = tmpdir.join("peer-discovery-modex");

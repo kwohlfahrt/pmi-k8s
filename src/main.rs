@@ -22,7 +22,8 @@ async fn main() -> Result<(), Error> {
         net::SocketAddr::new("0.0.0.0".parse().unwrap(), PORT),
         &peers,
     )
-    .await;
+    .await
+    .unwrap();
     let modex = NetModex::new(
         net::SocketAddr::new("0.0.0.0".parse().unwrap(), PORT + 1),
         &peers,

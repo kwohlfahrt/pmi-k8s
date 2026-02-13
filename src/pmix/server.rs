@@ -60,7 +60,7 @@ impl<'a, D: peer::PeerDiscovery> Server<'a, D> {
         loop {
             match self.rx.borrow_mut().recv().await.unwrap() {
                 globals::Event::Fence { procs, data, cb } => {
-                    self.fence.submit(&procs, data, cb).await
+                    self.fence.submit(&procs, data, cb).await.unwrap()
                 }
                 globals::Event::DirectModex { proc, cb } => self.modex.request(proc, cb).await,
             }
@@ -232,7 +232,8 @@ mod test {
                 net::SocketAddr::new(net::Ipv4Addr::LOCALHOST.into(), 0),
                 &discovery,
             )
-            .await;
+            .await
+            .unwrap();
             let modex = modex::NetModex::new(
                 net::SocketAddr::new(net::Ipv4Addr::LOCALHOST.into(), 0),
                 &discovery,
