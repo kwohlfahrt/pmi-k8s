@@ -21,15 +21,20 @@ unsafe extern "C" fn response(
 ) {
     assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
     let data = if !data.is_null() {
-        // data is owned by PMIx library, so we must copy.
+        // SAFETY: Data is a pointer to [ffi::c_char; sz], and we have checked
+        // for `null` ourselves.
         let slice = unsafe { slice::from_raw_parts(data, sz) };
+        // Data is owned by PMIx, so we must copy
         char_to_u8(slice).to_vec()
     } else {
         Vec::new()
     };
 
+    // SAFETY: We created `cbdata`` in `NetModex::respond`, from `oneshot::Sender<Vec<u8>>`
     let tx = *unsafe { Box::from_raw(cbdata as *mut oneshot::Sender<Vec<u8>>) };
-    tx.send(data).unwrap();
+
+    // If the receiver is dropped, there is nothing we have left to do.
+    tx.send(data).unwrap_or_default()
 }
 
 type RequestFn = unsafe extern "C" fn(
@@ -126,6 +131,7 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
         };
         let acc = Box::new(self.request_data(proc).await?);
         let data = u8_to_char(&acc);
+        // SAFETY: `data` lives as long as `acc`, which is freed by libpmix using `release_vec_u8`.
         unsafe {
             cbfunc(
                 sys::PMIX_SUCCESS as sys::pmix_status_t,
@@ -146,12 +152,14 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
         let proc = Self::parse_proc(buf);
         let tx = Box::new(tx);
 
+        // SAFETY: `request_fn` is PMIx_server_dmodex_request outside of tests.
+        // `response` unwraps `cbdata` into oneshot::Sender<Vec<u8>>.
         let status = unsafe {
             (self.request_fn)(&proc, Some(response), Box::into_raw(tx) as *mut ffi::c_void)
         };
         assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
 
-        let data = rx.await.unwrap();
+        let data = rx.await.expect("PMIx did not return modex response");
         c.write_all(&data).await?;
         Ok(())
     }
