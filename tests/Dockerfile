@@ -11,6 +11,6 @@ WORKDIR /app
 
 COPY ./test.py ./main.py
 
-COPY --link --from=pmi-k8s /usr/local/bin/pmi-k8s /usr/local/bin/
+COPY --link --from=ghcr.io/kwohlfahrt/pmi-k8s /usr/local/bin/pmi-k8s /usr/local/bin/
 
 ENTRYPOINT [ "/usr/local/bin/pmi-k8s" ]

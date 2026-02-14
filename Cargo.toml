@@ -9,18 +9,20 @@ name = "mock"
 required-features = ["test-bins"]
 
 [dependencies]
-tempdir = { version = "0.3.7" }
+futures = "0.3.31"
+tokio = { version = "1", features = ["rt", "macros", "io-util"] }
 kube = { version = "3", features = ["runtime", "derive"] }
 k8s-openapi = { version = "0.27", features = ["v1_35"] }
-tokio = { version = "1", features = ["rt", "macros", "io-util"] }
 thiserror = "2"
-anyhow = "1"
 libc = "0.2.180"
 nix = { version = "0.31.0", features = ["user"] }
-mpi = { version = "0.8.1", optional = true }
+tempdir = { version = "0.3.7" }
+# Entry-point dependencies
 clap = { version = "4.5.57", features = ["derive"] }
+anyhow = "1"
+# Test dependencies
+mpi = { version = "0.8.1", optional = true }
 notify = { version = "8.2.0", optional = true }
-futures = "0.3.31"
 
 [build-dependencies]
 bindgen = "0.72"
