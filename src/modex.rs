@@ -131,6 +131,8 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
         };
         let acc = Box::new(self.request_data(proc).await?);
         let data = u8_to_char(&acc);
+
+        // TODO: Create ModexCallback wrapper that handles this.
         // SAFETY: `data` lives as long as `acc`, which is freed by libpmix using `release_vec_u8`.
         unsafe {
             cbfunc(

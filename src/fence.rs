@@ -34,11 +34,16 @@ impl<'a, D: PeerDiscovery> NetFence<'a, D> {
         // TODO: make a wrapper type for globals::CData to avoid the copy.
         let (ptr, _) = data;
         let data = if !data.0.is_null() {
+            // SAFETY: Data is a pointer to [ffi::c_char; sz], and we have
+            // checked for `null` ourselves.
             let slice = unsafe { slice::from_raw_parts(data.0, data.1) };
             char_to_u8(slice).to_vec()
         } else {
             Vec::new()
         };
+
+        // SAFETY: PMIx standard says the user is responsible for `free`ing the
+        // data, assuming this means `libc::free`.
         unsafe { libc::free(ptr as *mut ffi::c_void) };
 
         data
@@ -65,7 +70,7 @@ impl<'a, D: PeerDiscovery> NetFence<'a, D> {
                 Err(e) => return Err(e),
             }
         };
-        s.write_all(data).await;
+        s.write_all(data).await?;
         Ok(())
     }
 
@@ -99,6 +104,9 @@ impl<'a, D: PeerDiscovery> NetFence<'a, D> {
         let data = Self::read_data(data);
         let acc = Box::new(self.submit_data(procs, &data).await?);
         let data = u8_to_char(&acc);
+
+        // TODO: Create ModexCallback wrapper that handles this.
+        // SAFETY: `data` lives as long as `acc`, which is freed by libpmix using `release_vec_u8`.
         unsafe {
             cbfunc(
                 sys::PMIX_SUCCESS as sys::pmix_status_t,
@@ -134,7 +142,7 @@ mod test {
         }))
         .await;
         for f in fences.iter() {
-            discovery.register(&f.addr());
+            discovery.register(&f.addr()).unwrap();
         }
         let procs = [sys::pmix_proc_t {
             nspace: [0; _],
