@@ -9,6 +9,7 @@ use tokio::{
 };
 
 use crate::{
+    ModexError,
     peer::PeerDiscovery,
     pmix::{char_to_u8, globals, sys, u8_to_char},
 };
@@ -51,7 +52,11 @@ pub struct NetModex<'a, D: PeerDiscovery> {
 }
 
 impl<'a, D: PeerDiscovery> NetModex<'a, D> {
-    pub async fn new(addr: SocketAddr, discovery: &'a D, nproc: u16) -> io::Result<Self> {
+    pub async fn new(
+        addr: SocketAddr,
+        discovery: &'a D,
+        nproc: u16,
+    ) -> Result<Self, ModexError<D::Error>> {
         let listener = net::TcpListener::bind(addr).await?;
         Ok(Self {
             listener,
@@ -98,23 +103,26 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
         sys::pmix_proc_t { rank, nspace }
     }
 
-    async fn request_data(&self, proc: sys::pmix_proc_t) -> io::Result<Vec<u8>> {
+    async fn request_data(&self, proc: sys::pmix_proc_t) -> Result<Vec<u8>, ModexError<D::Error>> {
         assert!(proc.rank <= sys::PMIX_RANK_VALID);
         let req = Self::serialize_proc(proc);
 
         let node_rank = proc.rank / self.nproc as u32;
-        let addr = self.discovery.peer(node_rank).await;
+        let addr = self
+            .discovery
+            .peer(node_rank)
+            .await
+            .map_err(ModexError::Peer)?;
 
         let mut s = loop {
             match net::TcpStream::connect(addr).await {
-                Ok(s) => break s,
                 Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
                     // TODO: Proper backoff
                     time::sleep(Duration::from_millis(250)).await
                 }
-                Err(e) => return Err(e),
+                r => break r,
             }
-        };
+        }?;
         s.write_all(&req).await?;
         let mut data = Vec::new();
         s.read_to_end(&mut data).await?;
@@ -125,7 +133,7 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
         &self,
         proc: sys::pmix_proc_t,
         callback: globals::ModexCallback,
-    ) -> io::Result<()> {
+    ) -> Result<(), ModexError<D::Error>> {
         let (Some(cbfunc), cbdata) = callback else {
             return Ok(());
         };
@@ -147,7 +155,7 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
         Ok(())
     }
 
-    async fn respond(&self, mut c: net::TcpStream) -> io::Result<()> {
+    async fn respond(&self, mut c: net::TcpStream) -> Result<(), ModexError<D::Error>> {
         let mut buf = [0; _];
         c.read_exact(&mut buf).await?;
         let (tx, rx) = oneshot::channel::<Vec<u8>>();
@@ -166,7 +174,7 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
         Ok(())
     }
 
-    pub async fn serve(&self) -> io::Result<()> {
+    pub async fn serve(&self) -> Result<(), ModexError<D::Error>> {
         while let Ok((c, _)) = self.listener.accept().await {
             // TODO: Process incoming requests in parallel
             self.respond(c).await?

@@ -8,6 +8,7 @@ use futures::{StreamExt, TryStreamExt, stream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::{net, time};
 
+use super::ModexError;
 use crate::peer::PeerDiscovery;
 use crate::pmix::{char_to_u8, globals, sys, u8_to_char};
 
@@ -17,7 +18,7 @@ pub struct NetFence<'a, D: PeerDiscovery> {
 }
 
 impl<'a, D: PeerDiscovery> NetFence<'a, D> {
-    pub async fn new(addr: SocketAddr, discovery: &'a D) -> tokio::io::Result<Self> {
+    pub async fn new(addr: SocketAddr, discovery: &'a D) -> Result<Self, ModexError<D::Error>> {
         let listener: net::TcpListener = net::TcpListener::bind(addr).await?;
         Ok(Self {
             listener,
@@ -30,7 +31,7 @@ impl<'a, D: PeerDiscovery> NetFence<'a, D> {
         self.listener.local_addr().unwrap()
     }
 
-    fn read_data(data: globals::CData) -> Vec<u8> {
+    fn load_data(data: globals::CData) -> Vec<u8> {
         // TODO: make a wrapper type for globals::CData to avoid the copy.
         let (ptr, _) = data;
         let data = if !data.0.is_null() {
@@ -74,13 +75,17 @@ impl<'a, D: PeerDiscovery> NetFence<'a, D> {
         Ok(())
     }
 
-    async fn submit_data(&self, procs: &[sys::pmix_proc_t], data: &[u8]) -> io::Result<Vec<u8>> {
+    async fn submit_data(
+        &self,
+        procs: &[sys::pmix_proc_t],
+        data: &[u8],
+    ) -> Result<Vec<u8>, ModexError<D::Error>> {
         // TODO: Handle other fence scopes
         assert_eq!(procs.len(), 1);
         assert_eq!(procs[0].rank, sys::PMIX_RANK_WILDCARD);
 
         // TODO: exclude ourselves from send + recv
-        let peers = self.discovery.peers().await;
+        let peers = self.discovery.peers().await.map_err(ModexError::Peer)?;
         let sends = peers
             .values()
             .map(|addr| Self::send(addr, data))
@@ -89,7 +94,7 @@ impl<'a, D: PeerDiscovery> NetFence<'a, D> {
         let acc = self.recv(peers.len());
 
         let (data, sends) = join(acc, sends).await;
-        sends.and(data)
+        sends.and(data).map_err(|e| e.into())
     }
 
     pub async fn submit(
@@ -97,11 +102,11 @@ impl<'a, D: PeerDiscovery> NetFence<'a, D> {
         procs: &[sys::pmix_proc_t],
         data: globals::CData,
         callback: globals::ModexCallback,
-    ) -> io::Result<()> {
+    ) -> Result<(), ModexError<D::Error>> {
         let (Some(cbfunc), cbdata) = callback else {
             return Ok(());
         };
-        let data = Self::read_data(data);
+        let data = Self::load_data(data);
         let acc = Box::new(self.submit_data(procs, &data).await?);
         let data = u8_to_char(&acc);
 

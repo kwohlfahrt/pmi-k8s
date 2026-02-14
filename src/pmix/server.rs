@@ -8,6 +8,8 @@ use tokio::sync::mpsc;
 
 use tempdir::TempDir;
 
+use crate::ModexError;
+
 use super::super::{fence, modex, peer};
 use super::{env, globals, sys, value::Rank};
 
@@ -56,7 +58,7 @@ impl<'a, D: peer::PeerDiscovery> Server<'a, D> {
         })
     }
 
-    async fn handle_events(&self) -> io::Result<()> {
+    async fn handle_events(&self) -> Result<(), ModexError<D::Error>> {
         loop {
             match self.rx.borrow_mut().recv().await.unwrap() {
                 globals::Event::Fence { procs, data, cb } => {
@@ -67,7 +69,7 @@ impl<'a, D: peer::PeerDiscovery> Server<'a, D> {
         }
     }
 
-    pub async fn run(&self) -> io::Result<()> {
+    pub async fn run(&self) -> Result<(), ModexError<D::Error>> {
         let events = pin!(self.handle_events());
         let modex = pin!(self.modex.serve());
         select(events, modex).await.factor_first().0

@@ -1,4 +1,4 @@
-use futures::future::join_all;
+use futures::{TryStreamExt, stream::FuturesUnordered};
 use notify::{self, Watcher};
 use std::{
     cell::RefCell,
@@ -11,6 +11,14 @@ use std::{
 use tokio::sync::mpsc;
 
 use super::PeerDiscovery;
+
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error("unable to read or write peer information")]
+    Io(#[from] io::Error),
+    #[error("unable to watch for new peers")]
+    Notify(#[from] notify::Error),
+}
 
 pub struct DirectoryPeers<'a> {
     dir: &'a Path,
@@ -27,22 +35,19 @@ impl<'a> DirectoryPeers<'a> {
         }
     }
 
-    fn read_peer(path: &Path) -> io::Result<net::SocketAddr> {
+    fn read_peer(path: &Path) -> Result<net::SocketAddr, Error> {
         Ok(fs::read_to_string(path)?.parse().unwrap())
     }
 
-    async fn wait_for_peer(&self, path: &Path) -> io::Result<net::SocketAddr> {
+    async fn wait_for_peer(&self, path: &Path) -> Result<net::SocketAddr, Error> {
         if path.exists() {
             // Fast path for if path already exists
             return Self::read_peer(path);
         }
 
         let (tx, mut rx) = mpsc::channel(1);
-        let mut watcher =
-            notify::recommended_watcher(move |res| tx.blocking_send(res).unwrap()).unwrap();
-        watcher
-            .watch(self.dir, notify::RecursiveMode::NonRecursive)
-            .unwrap();
+        let mut watcher = notify::recommended_watcher(move |res| tx.blocking_send(res).unwrap())?;
+        watcher.watch(self.dir, notify::RecursiveMode::NonRecursive)?;
 
         if path.exists() {
             // Handle race condition between fast-path and setting up watch
@@ -50,11 +55,11 @@ impl<'a> DirectoryPeers<'a> {
         }
 
         loop {
-            let event = rx.recv().await.unwrap().unwrap();
-            if event.kind == notify::EventKind::Create(notify::event::CreateKind::File) {
-                if event.paths.iter().any(|p| p == path) {
-                    break Self::read_peer(path);
-                }
+            let event = rx.recv().await.unwrap()?;
+            if event.kind == notify::EventKind::Create(notify::event::CreateKind::File)
+                && event.paths.iter().any(|p| p == path)
+            {
+                break Self::read_peer(path);
             }
         }
     }
@@ -83,18 +88,23 @@ impl<'a> DirectoryPeers<'a> {
 }
 
 impl<'a> PeerDiscovery for DirectoryPeers<'a> {
-    async fn peer(&self, node_rank: u32) -> net::SocketAddr {
+    type Error = Error;
+
+    async fn peer(&self, node_rank: u32) -> Result<net::SocketAddr, Error> {
         let path = self.dir.join(format!("{}", node_rank));
         if path.exists() {
-            Self::read_peer(&path).unwrap()
+            Ok(Self::read_peer(&path)?)
         } else {
-            self.wait_for_peer(&path).await.unwrap()
+            Ok(self.wait_for_peer(&path).await?)
         }
     }
 
-    async fn peers(&self) -> HashMap<u32, net::SocketAddr> {
-        let peers = (0..self.nnodes).map(async |node_rank| (node_rank, self.peer(node_rank).await));
-        join_all(peers).await.into_iter().collect()
+    async fn peers(&self) -> Result<HashMap<u32, net::SocketAddr>, Error> {
+        (0..self.nnodes)
+            .map(async |node_rank| self.peer(node_rank).await.map(|peer| (node_rank, peer)))
+            .collect::<FuturesUnordered<_>>()
+            .try_collect()
+            .await
     }
 
     fn local_ranks(&self, nprocs: u16) -> impl Iterator<Item = u32> {
@@ -104,7 +114,10 @@ impl<'a> PeerDiscovery for DirectoryPeers<'a> {
 
     fn hostnames(&self) -> impl Iterator<Item = std::ffi::CString> {
         // These hostnames don't actually resolve, but that doesn't seem to matter.
-        (0..self.nnodes).map(|rank| ffi::CString::new(format!("mpi-{}", rank)).unwrap())
+        (0..self.nnodes).map(|rank| {
+            #[allow(clippy::unwrap_used, reason = "Literal string without NULLs")]
+            ffi::CString::new(format!("mpi-{}", rank)).unwrap()
+        })
     }
 }
 
@@ -133,6 +146,7 @@ mod test {
         let peers = discovery
             .peers()
             .await
+            .unwrap()
             .into_values()
             .collect::<HashSet<_>>();
         assert_eq!(peers, expected);

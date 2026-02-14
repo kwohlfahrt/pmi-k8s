@@ -3,6 +3,7 @@ use std::{collections::HashMap, env, ffi, net, pin::pin};
 
 use k8s_openapi::api::{batch::v1::Job, core::v1::Pod};
 use kube::{self, Api, Client, Config, runtime::watcher};
+use thiserror::Error;
 
 use super::PeerDiscovery;
 
@@ -17,6 +18,9 @@ const NAME_LABEL: &str = "batch.kubernetes.io/job-name";
 const RANK_LABEL: &str = "batch.kubernetes.io/job-completion-index";
 // TODO: Allow configuring
 pub const PORT: u16 = 5000;
+
+#[derive(Error, Debug)]
+pub enum Error {}
 
 impl KubernetesPeers {
     pub async fn new() -> Self {
@@ -82,21 +86,23 @@ impl KubernetesPeers {
 }
 
 impl PeerDiscovery for KubernetesPeers {
-    async fn peer(&self, node_rank: u32) -> net::SocketAddr {
+    type Error = Error;
+
+    async fn peer(&self, node_rank: u32) -> Result<net::SocketAddr, Self::Error> {
         let mut pod_ips = pin!(self.watch_pods(Some(node_rank)));
         let pod_ip = pod_ips.next().await.unwrap().unwrap();
         // FIXME: Hack - adding +1 here because this method is used by modex, and peers() is used by fences
-        net::SocketAddr::new(pod_ip.1, PORT + 1)
+        Ok(net::SocketAddr::new(pod_ip.1, PORT + 1))
     }
 
-    async fn peers(&self) -> HashMap<u32, net::SocketAddr> {
+    async fn peers(&self) -> Result<HashMap<u32, net::SocketAddr>, Self::Error> {
         let mut peers = HashMap::new();
         let mut pod_ips = pin!(self.watch_pods(None));
         while peers.len() < self.nnodes as usize {
             let (rank, pod_ip) = pod_ips.next().await.unwrap().unwrap();
             peers.insert(rank, net::SocketAddr::new(pod_ip, PORT));
         }
-        peers
+        Ok(peers)
     }
 
     fn local_ranks(&self, nproc: u16) -> impl Iterator<Item = u32> {

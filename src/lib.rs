@@ -1,9 +1,19 @@
+use std::{error::Error, fmt, io};
+
 use clap::Parser;
 
 pub mod fence;
 pub mod modex;
 pub mod peer;
 pub mod pmix;
+
+#[derive(Debug, thiserror::Error)]
+pub enum ModexError<E: Error + fmt::Debug> {
+    #[error("error in modex communication")]
+    Io(#[from] io::Error),
+    #[error("error in peer discovery")]
+    Peer(E),
+}
 
 #[derive(Parser, Debug)]
 pub struct Cli {
