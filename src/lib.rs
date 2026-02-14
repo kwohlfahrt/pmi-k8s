@@ -33,5 +33,11 @@ mod test {
         assert_eq!(cli.nproc, 2);
         assert_eq!(cli.command, "foo");
         assert_eq!(cli.args, ["bar", "--baz"]);
+
+        let cli =
+            Cli::try_parse_from(["pmi-k8s", "--nproc=2", "--", "foo", "bar", "--baz"]).unwrap();
+        assert_eq!(cli.nproc, 2);
+        assert_eq!(cli.command, "foo");
+        assert_eq!(cli.args, ["bar", "--baz"]);
     }
 }
