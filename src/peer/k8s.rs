@@ -20,34 +20,50 @@ const RANK_LABEL: &str = "batch.kubernetes.io/job-completion-index";
 pub const PORT: u16 = 5000;
 
 #[derive(Error, Debug)]
-pub enum Error {}
+pub enum Error {
+    #[error("unable to detect Kubernetes configuration")]
+    KubernetesConfig(#[from] kube::config::InferConfigError),
+    #[error("error performing Kubernetes operation")]
+    KubernetesApi(#[from] kube::Error),
+    #[error("error watching Kubernetes resources")]
+    KubernetesWatch(#[from] watcher::Error),
+    #[error("required environment variable not defined")]
+    MissingEnv(#[from] env::VarError),
+    #[error("required environment variable could not be parsed")]
+    InvalidEnv(#[from] std::num::ParseIntError),
+    #[error("missing expected field on Kubernetes object")]
+    MissingField(&'static str),
+}
 
 impl KubernetesPeers {
-    pub async fn new() -> Self {
-        let job_name = env::var("JOB_NAME").unwrap();
-        let node_rank = env::var("JOB_COMPLETION_INDEX").unwrap().parse().unwrap();
-        let config = Config::infer().await.unwrap();
+    pub async fn new() -> Result<Self, Error> {
+        let job_name = env::var("JOB_NAME")?;
+        let node_rank = env::var("JOB_COMPLETION_INDEX")?.parse()?;
+        let config = kube::Config::infer().await?;
         Self::new_with_config(job_name, node_rank, config).await
     }
 
-    async fn new_with_config(job_name: String, node_rank: u32, config: Config) -> Self {
-        let client = Client::try_from(config).unwrap();
+    async fn new_with_config(
+        job_name: String,
+        node_rank: u32,
+        config: Config,
+    ) -> Result<Self, Error> {
+        let client = Client::try_from(config)?;
         let pods = Api::<Pod>::default_namespaced(client.clone());
         let jobs = Api::<Job>::default_namespaced(client);
         let nnodes = jobs
             .get(&job_name)
-            .await
-            .unwrap()
+            .await?
             .spec
             .and_then(|s| s.parallelism)
-            .unwrap() as u32;
+            .ok_or(Error::MissingField("Job:spec.parallelism"))? as u32;
 
-        Self {
+        Ok(Self {
             pods,
             job_name,
             nnodes,
             node_rank,
-        }
+        })
     }
 
     fn label_selector(&self, node_rank: Option<u32>) -> String {
@@ -90,7 +106,7 @@ impl PeerDiscovery for KubernetesPeers {
 
     async fn peer(&self, node_rank: u32) -> Result<net::SocketAddr, Self::Error> {
         let mut pod_ips = pin!(self.watch_pods(Some(node_rank)));
-        let pod_ip = pod_ips.next().await.unwrap().unwrap();
+        let pod_ip = pod_ips.next().await.unwrap()?;
         // FIXME: Hack - adding +1 here because this method is used by modex, and peers() is used by fences
         Ok(net::SocketAddr::new(pod_ip.1, PORT + 1))
     }
@@ -99,7 +115,7 @@ impl PeerDiscovery for KubernetesPeers {
         let mut peers = HashMap::new();
         let mut pod_ips = pin!(self.watch_pods(None));
         while peers.len() < self.nnodes as usize {
-            let (rank, pod_ip) = pod_ips.next().await.unwrap().unwrap();
+            let (rank, pod_ip) = pod_ips.next().await.unwrap()?;
             peers.insert(rank, net::SocketAddr::new(pod_ip, PORT));
         }
         Ok(peers)
@@ -110,7 +126,9 @@ impl PeerDiscovery for KubernetesPeers {
     }
 
     fn hostnames(&self) -> impl Iterator<Item = ffi::CString> {
-        (0..self.nnodes)
-            .map(|rank| ffi::CString::new(format!("{}-{}", self.job_name, rank)).unwrap())
+        (0..self.nnodes).map(|rank| {
+            #[allow(clippy::unwrap_used, reason = "Literal string without NULLs")]
+            ffi::CString::new(format!("{}-{}", self.job_name, rank)).unwrap()
+        })
     }
 }

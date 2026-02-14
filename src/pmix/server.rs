@@ -1,9 +1,9 @@
 use futures::future::select;
 use std::cell::RefCell;
+use std::ffi;
 use std::marker::PhantomData;
 use std::pin::pin;
 use std::ptr;
-use std::{ffi, io};
 use tokio::sync::mpsc;
 
 use tempdir::TempDir;

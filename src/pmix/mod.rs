@@ -1,5 +1,6 @@
 use std::{ffi, slice};
 
+#[cfg(feature = "test-bins")]
 pub mod client;
 pub mod env;
 pub mod globals;

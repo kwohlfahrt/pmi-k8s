@@ -17,7 +17,7 @@ async fn main() -> Result<(), Error> {
     let args = Cli::parse();
     let namespace = c"foo";
 
-    let peers = KubernetesPeers::new().await;
+    let peers = KubernetesPeers::new().await?;
     let fence = NetFence::new(
         net::SocketAddr::new("0.0.0.0".parse().unwrap(), PORT),
         &peers,
