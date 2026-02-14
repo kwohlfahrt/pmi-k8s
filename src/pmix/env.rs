@@ -89,6 +89,7 @@ impl<'a> Iterator for EnvIter<'a> {
     }
 }
 
+#[allow(clippy::unwrap_used)]
 #[cfg(test)]
 mod test {
     use super::*;

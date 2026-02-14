@@ -123,7 +123,7 @@ impl<'a, D: peer::PeerDiscovery> Namespace<'a, D> {
                     let rank = Rank((nlocalprocs as u32 * node_rank) + i as u32);
                     [
                         (sys::PMIX_RANK, rank).into(),
-                        (sys::PMIX_LOCAL_RANK, i as u16).into(),
+                        (sys::PMIX_LOCAL_RANK, i).into(),
                         (sys::PMIX_NODEID, node_rank).into(),
                     ]
                 })
@@ -187,7 +187,7 @@ impl<'a, D: peer::PeerDiscovery> Client<'a, D> {
                 ptr::null_mut(),
             )
         };
-        assert_eq!(status, sys::PMIX_OPERATION_SUCCEEDED as i32);
+        assert_eq!(status, sys::PMIX_OPERATION_SUCCEEDED as sys::pmix_status_t);
         Client {
             proc,
             namespace: PhantomData,
@@ -210,6 +210,7 @@ impl<'a, D: peer::PeerDiscovery> Drop for Client<'a, D> {
     }
 }
 
+#[allow(clippy::unwrap_used)]
 #[cfg(test)]
 mod test {
     use std::net;

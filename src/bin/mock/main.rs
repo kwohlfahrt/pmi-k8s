@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 use anyhow::Error;
 use clap::{Parser, Subcommand};
 

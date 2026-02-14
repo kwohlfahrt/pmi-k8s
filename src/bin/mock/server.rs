@@ -54,7 +54,7 @@ pub(crate) async fn run(args: ServerArgs) -> Result<(), Error> {
     )
     .await
     .unwrap();
-    peers.register(&fence.addr());
+    peers.register(&fence.addr()).unwrap();
 
     let peer_dir = tmpdir.join("peer-discovery-modex");
     fs::create_dir_all(&peer_dir).unwrap();
@@ -64,8 +64,9 @@ pub(crate) async fn run(args: ServerArgs) -> Result<(), Error> {
         &peers,
         nprocs,
     )
-    .await;
-    peers.register(&modex.addr());
+    .await
+    .unwrap();
+    peers.register(&modex.addr()).unwrap();
     let s = pmix::server::Server::init(fence, modex).unwrap();
 
     let hostnames = peers.hostnames().collect::<Vec<_>>();

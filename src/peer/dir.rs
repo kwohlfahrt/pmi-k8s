@@ -1,4 +1,3 @@
-// FIXME: This is only used in testing, make the dependency dev-only
 use futures::future::join_all;
 use notify::{self, Watcher};
 use std::{
@@ -28,11 +27,11 @@ impl<'a> DirectoryPeers<'a> {
         }
     }
 
-    fn read_peer(path: &Path) -> net::SocketAddr {
-        fs::read_to_string(path).unwrap().trim().parse().unwrap()
+    fn read_peer(path: &Path) -> io::Result<net::SocketAddr> {
+        Ok(fs::read_to_string(path)?.parse().unwrap())
     }
 
-    async fn wait_for_peer(&self, path: &Path) -> net::SocketAddr {
+    async fn wait_for_peer(&self, path: &Path) -> io::Result<net::SocketAddr> {
         if path.exists() {
             // Fast path for if path already exists
             return Self::read_peer(path);
@@ -60,7 +59,7 @@ impl<'a> DirectoryPeers<'a> {
         }
     }
 
-    pub fn register(&self, addr: &net::SocketAddr) {
+    pub fn register(&self, addr: &net::SocketAddr) -> io::Result<()> {
         let (node_rank, mut f) = (0..self.nnodes)
             .map(|node_rank| {
                 (
@@ -77,8 +76,9 @@ impl<'a> DirectoryPeers<'a> {
             .expect("All nodes already registered")
             .expect("Error registering node");
 
-        f.write(addr.to_string().as_bytes()).unwrap();
+        f.write_all(addr.to_string().as_bytes())?;
         *self.node_rank.borrow_mut() = Some(node_rank);
+        Ok(())
     }
 }
 
@@ -86,9 +86,9 @@ impl<'a> PeerDiscovery for DirectoryPeers<'a> {
     async fn peer(&self, node_rank: u32) -> net::SocketAddr {
         let path = self.dir.join(format!("{}", node_rank));
         if path.exists() {
-            Self::read_peer(&path)
+            Self::read_peer(&path).unwrap()
         } else {
-            self.wait_for_peer(&path).await
+            self.wait_for_peer(&path).await.unwrap()
         }
     }
 
@@ -108,6 +108,7 @@ impl<'a> PeerDiscovery for DirectoryPeers<'a> {
     }
 }
 
+#[allow(clippy::unwrap_used)]
 #[cfg(test)]
 mod test {
     use std::collections::HashSet;
@@ -126,7 +127,7 @@ mod test {
             .collect::<HashSet<_>>();
 
         for addr in &expected {
-            discovery.register(addr);
+            discovery.register(addr).unwrap();
         }
 
         let peers = discovery

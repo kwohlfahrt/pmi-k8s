@@ -167,8 +167,7 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
     }
 }
 
-#[allow(clippy::unwrap_used)]
-#[allow(clippy::panic)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 #[cfg(test)]
 mod test {
     use crate::peer::DirectoryPeers;
@@ -207,8 +206,8 @@ mod test {
         let responder = NetModex::with_mock_request(addr, &discovery, nproc, request_fn)
             .await
             .unwrap();
-        discovery.register(&sender.addr());
-        discovery.register(&responder.addr());
+        discovery.register(&sender.addr()).unwrap();
+        discovery.register(&responder.addr()).unwrap();
 
         let proc = sys::pmix_proc_t {
             nspace: [0; _],
