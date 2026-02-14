@@ -87,7 +87,7 @@ jobs:
             type=ref,event=pr
             type=edge,branch=main
             type=semver,pattern=v{{version}}
-            type=semver,pattern=v{{major}}.{{minor}}
+            type=semver,pattern=v{{major}}.{{minor}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.0.') }}
             type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
       # Build multi-platform image. This should be reasonably efficient due to
       # using the cache from the test stage, but it should be possible to upload
