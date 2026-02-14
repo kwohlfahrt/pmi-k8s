@@ -26,8 +26,7 @@ impl<'a, D: PeerDiscovery> NetFence<'a, D> {
     }
 
     pub fn addr(&self) -> SocketAddr {
-        // We know we have bound a local socket, so this can be unwrapped.
-        #[allow(clippy::unwrap_used)]
+        #[allow(clippy::unwrap_used, reason = "We know we have a socket bound")]
         self.listener.local_addr().unwrap()
     }
 
@@ -115,8 +114,8 @@ impl<'a, D: PeerDiscovery> NetFence<'a, D> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod test {
+    #![allow(clippy::unwrap_used)]
     use std::{collections::HashSet, net::Ipv4Addr};
 
     use super::*;

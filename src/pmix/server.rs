@@ -210,9 +210,9 @@ impl<'a, D: peer::PeerDiscovery> Drop for Client<'a, D> {
     }
 }
 
-#[allow(clippy::unwrap_used)]
 #[cfg(test)]
 mod test {
+    #![allow(clippy::unwrap_used)]
     use std::net;
 
     use serial_test::serial;

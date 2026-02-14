@@ -54,14 +54,16 @@ impl Client {
     pub fn namespace(&self) -> &CStr {
         let namespace = super::char_to_u8(&self.proc.nspace);
 
-        // PMIx initializes the namespace, so it is guaranteed to be valid
-        #[allow(clippy::unwrap_used)]
+        #[allow(
+            clippy::unwrap_used,
+            reason = "Namespace is initialized by PMIx as a C string"
+        )]
         CStr::from_bytes_until_nul(namespace).unwrap()
     }
 
     fn get(
         proc: Option<&sys::pmix_proc_t>,
-        #[allow(unused_mut)] mut infos: Vec<sys::pmix_info_t>,
+        infos: Vec<sys::pmix_info_t>,
         key: &CStr,
     ) -> sys::pmix_value_t {
         // We should use PMIX_GET_STATIC_VALUES, but this does not work. See

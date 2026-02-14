@@ -79,8 +79,10 @@ impl<'a> Iterator for EnvIter<'a> {
             // assume they are valid C strings), or from `ffi::CString` in
             // `EnvVars::new()`.
             let env_var = unsafe { ffi::CStr::from_ptr(env_var) }.to_bytes();
-            // Env vars populated by libpmix always contain '='
-            #[allow(clippy::unwrap_used)]
+            #[allow(
+                clippy::unwrap_used,
+                reason = "Env vars populated by libpmix always contain '='"
+            )]
             let split = env_var.iter().position(|c| *c == b'=').unwrap();
             let k = ffi::OsStr::from_bytes(&env_var[..split]);
             let v = ffi::OsStr::from_bytes(&env_var[split + 1..]);
@@ -89,9 +91,9 @@ impl<'a> Iterator for EnvIter<'a> {
     }
 }
 
-#[allow(clippy::unwrap_used)]
 #[cfg(test)]
 mod test {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]

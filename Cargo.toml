@@ -38,3 +38,5 @@ test-bins = ["dep:mpi", "dep:notify"]
 panic = "warn"
 unwrap_used = "warn"
 undocumented_unsafe_blocks = "warn"
+# lib is for internal use only, so we don't care about stability
+async_fn_in_trait = "allow"

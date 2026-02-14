@@ -21,7 +21,7 @@ pub fn is_initialized() -> bool {
 pub fn char_to_u8(chars: &[ffi::c_char]) -> &[u8] {
     let ptr = chars.as_ptr();
     // SAFETY: This is the recommended way to transmute [ffi::c_char] to [u8]
-    #[allow(clippy::unnecessary_cast)]
+    #[cfg_attr(not(target_arch = "x86_64"), expect(clippy::unnecessary_cast))]
     unsafe {
         slice::from_raw_parts(ptr as *const u8, chars.len())
     }

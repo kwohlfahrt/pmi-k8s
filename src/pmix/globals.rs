@@ -93,9 +93,8 @@ unsafe extern "C" fn fence_nb(
         let cb = (cbfunc, cbdata);
         let data = (data, ndata);
         // mpsc::UnboundedSender::send() only fails if the receiver is dropped,
-        // which only happens in Server::drop, which also clears PMIX_STATE,
-        // making this call unreachable.
-        #[allow(clippy::unwrap_used)]
+        // which only happens in Server::drop, which also clears PMIX_STATE.
+        #[allow(clippy::unwrap_used, reason = "Unreachable if receiver is dropped")]
         s.send(Event::Fence { procs, data, cb }).unwrap();
         sys::PMIX_SUCCESS as sys::pmix_status_t
     } else {

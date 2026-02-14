@@ -73,8 +73,7 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
     }
 
     pub fn addr(&self) -> SocketAddr {
-        // We know we have bound a local socket, so this can be unwrapped.
-        #[allow(clippy::unwrap_used)]
+        #[allow(clippy::unwrap_used, reason = "We know we have a socket bound")]
         self.listener.local_addr().unwrap()
     }
 
@@ -87,10 +86,9 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
 
     fn parse_proc(buf: [u8; mem::size_of::<sys::pmix_proc_t>()]) -> sys::pmix_proc_t {
         let (nspace, rank) = buf.split_at(mem::size_of::<sys::pmix_nspace_t>());
-        // We have statically known sizes for everything, so can unwrap here.
-        #[allow(clippy::unwrap_used)]
+        #[allow(clippy::unwrap_used, reason = "Sizes are statically known")]
         let rank = u32::from_be_bytes(rank.try_into().unwrap());
-        #[allow(clippy::unwrap_used)]
+        #[allow(clippy::unwrap_used, reason = "Sizes are statically known")]
         let nspace = u8_to_char(nspace).try_into().unwrap();
         sys::pmix_proc_t { rank, nspace }
     }
@@ -167,9 +165,9 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
     }
 }
 
-#[allow(clippy::unwrap_used, clippy::panic)]
 #[cfg(test)]
 mod test {
+    #![allow(clippy::unwrap_used, clippy::panic, clippy::undocumented_unsafe_blocks)]
     use crate::peer::DirectoryPeers;
     use std::{net::Ipv4Addr, pin::pin};
 
@@ -188,10 +186,7 @@ mod test {
 
         let mut data: [ffi::c_char; _] = [1, 2, 3];
         let status = sys::PMIX_SUCCESS as sys::pmix_status_t;
-        #[allow(clippy::undocumented_unsafe_blocks)]
-        unsafe {
-            cbfunc(status, data.as_mut_ptr(), data.len(), cbdata)
-        };
+        unsafe { cbfunc(status, data.as_mut_ptr(), data.len(), cbdata) };
         sys::PMIX_SUCCESS as sys::pmix_status_t
     }
 

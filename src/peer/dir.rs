@@ -108,9 +108,9 @@ impl<'a> PeerDiscovery for DirectoryPeers<'a> {
     }
 }
 
-#[allow(clippy::unwrap_used)]
 #[cfg(test)]
 mod test {
+    #![allow(clippy::unwrap_used)]
     use std::collections::HashSet;
 
     use super::*;
