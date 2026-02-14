@@ -28,6 +28,9 @@ impl Client {
         }
 
         let mut proc = MaybeUninit::<sys::pmix_proc_t>::uninit();
+        // SAFETY: `info` & `ninfo` match the data size. `PMIx_init` can be
+        // called multiple times, as long as there are matching calls to
+        // `PMIx_Finalize`.
         let status = unsafe {
             sys::PMIx_Init(
                 proc.as_mut_ptr(),
@@ -67,8 +70,12 @@ impl Client {
         key: &CStr,
     ) -> sys::pmix_value_t {
         // We should use PMIX_GET_STATIC_VALUES, but this does not work. See
-        // github.com/openpmix/openpmix#3782.
+        // github.com/openpmix/openpmix#3782. Once this is resolved, the dance
+        // to free `val_p` below is no longer necessary.
         let mut val_p = MaybeUninit::<*mut sys::pmix_value_t>::uninit();
+
+        // SAFETY: `key` is a valid C string, `info` & `ninfo` match the data
+        // size. `val` is a single-element pointer.
         let status = unsafe {
             sys::PMIx_Get(
                 proc.map_or(ptr::null(), |p| p),
@@ -79,16 +86,21 @@ impl Client {
             )
         };
         assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
-        let val_p = unsafe { val_p.assume_init() };
-        let val = unsafe { val_p.read() };
 
-        // Mark the source as PMIX_UNDEF, so the data we've moved into val is not free'd.
+        // SAFETY: `val_p` is initialized by the call to PMIx_Get above. We now
+        // own the pointed-to data, so it is free'd with `PMIx_Value_free`.
+        // However, the value object we return also points to the same interior
+        // data, so we set the value type to `PMIX_UNDEF`, to move ownership of
+        // the interior data to the returned `sys::pmix_value_t`.
         unsafe {
+            let val_p = val_p.assume_init();
+            let val = val_p.read();
+
+            // Mark the source as PMIX_UNDEF, so the data we've moved into val is not free'd.
             (*val_p).type_ = sys::PMIX_UNDEF as u16;
             sys::PMIx_Value_free(val_p, 1);
+            val
         }
-
-        val
     }
 
     pub fn get_session(&self, session: Option<Session>, key: &CStr) -> sys::pmix_value_t {
@@ -128,5 +140,13 @@ impl Client {
         };
 
         Self::get(Some(&proc), infos, key)
+    }
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        // SAFETY: PMIx_Finalize must match a call to PMIx_Init.
+        let status = unsafe { sys::PMIx_Finalize(ptr::null(), 0) };
+        assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
     }
 }
