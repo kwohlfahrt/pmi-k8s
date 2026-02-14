@@ -18,6 +18,8 @@ pub enum Error {
     Io(#[from] io::Error),
     #[error("unable to watch for new peers")]
     Notify(#[from] notify::Error),
+    #[error("unable to parse data")]
+    InvalidAddr(#[from] net::AddrParseError),
 }
 
 pub struct DirectoryPeers<'a> {
@@ -36,7 +38,7 @@ impl<'a> DirectoryPeers<'a> {
     }
 
     fn read_peer(path: &Path) -> Result<net::SocketAddr, Error> {
-        Ok(fs::read_to_string(path)?.parse().unwrap())
+        Ok(fs::read_to_string(path)?.parse()?)
     }
 
     async fn wait_for_peer(&self, path: &Path) -> Result<net::SocketAddr, Error> {

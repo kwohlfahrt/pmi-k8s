@@ -126,8 +126,9 @@ unsafe extern "C" fn direct_modex(
         // SAFETY: `proc` is passed to us by libpmix, assume it is valid.
         let proc = unsafe { *proc };
         let cb = (cbfunc, cbdata);
-        // mpsc::Sender only fails to send if the receiver is dropped. This only
-        // happens in Server::drop, which also clears PMIX_STATE state.
+        // mpsc::UnboundedSender::send() only fails if the receiver is dropped,
+        // which only happens in Server::drop, which also clears PMIX_STATE.
+        #[allow(clippy::unwrap_used, reason = "Unreachable if receiver is dropped")]
         s.send(Event::DirectModex { proc, cb }).unwrap();
         sys::PMIX_SUCCESS as sys::pmix_status_t
     } else {
