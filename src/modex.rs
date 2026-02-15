@@ -174,12 +174,12 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
         Ok(())
     }
 
-    pub async fn serve(&self) -> Result<(), ModexError<D::Error>> {
-        while let Ok((c, _)) = self.listener.accept().await {
+    pub async fn serve(&self) -> Result<!, ModexError<D::Error>> {
+        loop {
             // TODO: Process incoming requests in parallel
+            let (c, _) = self.listener.accept().await?;
             self.respond(c).await?
         }
-        Ok(())
     }
 }
 

@@ -49,11 +49,13 @@ async fn main() -> Result<(), Error> {
             .collect::<Result<Vec<_>, _>>()
     });
     let run = pin!(s.run());
-    let Either::Left((rcs, _)) = select(rcs, run).await else {
-        panic!("server stopped unexpectedly")
+    let rcs = match select(rcs, run).await {
+        Either::Left((Ok(rcs), _)) => rcs?,
+        Either::Left((Err(e), _)) => Err(e)?,
+        Either::Right((Err(e), _)) => Err(e)?,
     };
 
-    assert!(rcs??.iter().all(|rc| rc.success()));
+    assert!(rcs.iter().all(|rc| rc.success()));
 
     Ok(())
 }
