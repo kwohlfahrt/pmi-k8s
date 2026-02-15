@@ -1,10 +1,15 @@
-use clap::Parser;
-use std::{net, pin::pin, process::Command};
+use futures::{
+    TryStreamExt,
+    future::{Either, select},
+    stream::FuturesUnordered,
+};
+use std::{net, pin::pin};
 use tempdir::TempDir;
 
 use anyhow::Error;
+use clap::Parser;
+use tokio::process::Command;
 
-use futures::future::{Either, select};
 use pmi_k8s::{
     Cli,
     fence::NetFence,
@@ -35,24 +40,19 @@ async fn main() -> Result<(), Error> {
         .map(|i| pmix::server::Client::register(&ns, i))
         .collect::<Vec<_>>();
 
-    let ps = clients
-        .iter()
-        .map(|c| {
-            let mut cmd = Command::new(&args.command);
-            cmd.envs(&c.envs()).args(&args.args).spawn()
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let rcs = tokio::task::spawn_blocking(|| {
-        ps.into_iter()
-            .map(|mut p| p.wait())
-            .collect::<Result<Vec<_>, _>>()
-    });
     let run = pin!(s.run());
+    let rcs = clients
+        .iter()
+        .map(async |c| {
+            let mut cmd = Command::new(&args.command);
+            cmd.envs(&c.envs()).args(&args.args).spawn()?.wait().await
+        })
+        .collect::<FuturesUnordered<_>>()
+        .try_collect::<Vec<_>>();
+
     let rcs = match select(rcs, run).await {
-        Either::Left((Ok(rcs), _)) => rcs?,
-        Either::Left((Err(e), _)) => Err(e)?,
-        Either::Right((Err(e), _)) => Err(e)?,
+        Either::Left((rcs, _)) => rcs?,
+        Either::Right((err, _)) => err?,
     };
 
     assert!(rcs.iter().all(|rc| rc.success()));

@@ -10,7 +10,7 @@ required-features = ["test-bins"]
 
 [dependencies]
 futures = "0.3.31"
-tokio = { version = "1", features = ["rt", "macros", "io-util"] }
+tokio = { version = "1", features = ["rt", "macros", "io-util", "process"] }
 kube = { version = "3", features = ["runtime", "derive"] }
 k8s-openapi = { version = "0.27", features = ["v1_35"] }
 thiserror = "2"
