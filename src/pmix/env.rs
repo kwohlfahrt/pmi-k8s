@@ -26,8 +26,8 @@ impl EnvVars {
         for var in vars {
             assert!(var.to_bytes().contains(&b'='));
             // SAFETY: `ptr` may be null, or an existing `argv`-style array. It
-            // is created as `NULL` above, and only modified here. `var` must be
-            // a null-terminated `char*`. Enforced by `ffi::CString`.
+            // is created as `NULL` above, and only modified here. `var` is a
+            // valid C string.
             let status = unsafe { sys::PMIx_Argv_append_nosize(&mut ptr, var.as_ptr()) };
             assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
         }

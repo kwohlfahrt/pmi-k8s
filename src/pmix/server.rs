@@ -43,11 +43,13 @@ impl<'a, D: peer::PeerDiscovery> Server<'a, D> {
             return Err(globals::AlreadyInitialized());
         }
         let (tx, rx) = mpsc::unbounded_channel();
+        *guard = Some(globals::State::Server(tx));
+        // SAFETY: global state accessed by the function pointers in `module` is
+        // populated. `infos` is a pointer to an info array of length `ninfo`.
         let status =
             unsafe { sys::PMIx_server_init(&mut module, infos.as_ptr() as *mut _, infos.len()) };
         // FIXME: Don't poison the lock on failure
         assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
-        *guard = Some(globals::State::Server(tx));
 
         Ok(Self {
             fence,
@@ -59,6 +61,7 @@ impl<'a, D: peer::PeerDiscovery> Server<'a, D> {
 
     async fn handle_events(&self) -> Result<Infallible, ModexError<D::Error>> {
         loop {
+            #[allow(clippy::unwrap_used, reason="Sender is only dropped in Server::drop()")]
             match self.rx.borrow_mut().recv().await.unwrap() {
                 globals::Event::Fence { procs, data, cb } => {
                     self.fence.submit(&procs, data, cb).await?
@@ -138,6 +141,7 @@ impl<'a, D: peer::PeerDiscovery> Namespace<'a, D> {
             .chain(node_infos)
             .collect::<Vec<_>>();
 
+        // SAFETY: No significant safety concerns.
         let status = unsafe {
             sys::PMIx_server_register_nspace(
                 nspace.as_ptr(),

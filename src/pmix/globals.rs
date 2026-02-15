@@ -33,6 +33,7 @@ pub static PMIX_STATE: RwLock<Option<State>> = RwLock::new(None);
 pub struct AlreadyInitialized();
 
 pub struct Unsync(pub PhantomData<*const ()>);
+// SAFETY: This is a marker type, for `Send + !Sync`
 unsafe impl Send for Unsync {}
 
 /// # Safety
@@ -93,7 +94,8 @@ unsafe extern "C" fn fence_nb(
         let cb = (cbfunc, cbdata);
         let data = (data, ndata);
         // mpsc::UnboundedSender::send() only fails if the receiver is dropped,
-        // which only happens in Server::drop, which also clears PMIX_STATE.
+        // which only happens in Server::drop, which clears PMIX_STATE and calls
+        // PMIx_server_finalize (deactivating this callback).
         #[allow(clippy::unwrap_used, reason = "Unreachable if receiver is dropped")]
         s.send(Event::Fence { procs, data, cb }).unwrap();
         sys::PMIX_SUCCESS as sys::pmix_status_t
@@ -127,7 +129,8 @@ unsafe extern "C" fn direct_modex(
         let proc = unsafe { *proc };
         let cb = (cbfunc, cbdata);
         // mpsc::UnboundedSender::send() only fails if the receiver is dropped,
-        // which only happens in Server::drop, which also clears PMIX_STATE.
+        // which only happens in Server::drop, which clears PMIX_STATE and calls
+        // PMIx_server_finalize (deactivating this callback).
         #[allow(clippy::unwrap_used, reason = "Unreachable if receiver is dropped")]
         s.send(Event::DirectModex { proc, cb }).unwrap();
         sys::PMIX_SUCCESS as sys::pmix_status_t

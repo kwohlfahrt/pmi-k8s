@@ -28,9 +28,8 @@ impl Client {
         }
 
         let mut proc = MaybeUninit::<sys::pmix_proc_t>::uninit();
-        // SAFETY: `info` & `ninfo` match the data size. `PMIx_init` can be
-        // called multiple times, as long as there are matching calls to
-        // `PMIx_Finalize`.
+        // SAFETY: `PMIx_init` can be called multiple times, as long as there
+        // are matching calls to `PMIx_Finalize`.
         let status = unsafe {
             sys::PMIx_Init(
                 proc.as_mut_ptr(),
@@ -38,7 +37,7 @@ impl Client {
                 infos.len(),
             )
         };
-        // FIXME: Don't poison the mutes on init error
+        // FIXME: Don't poison the mutex on init error
         assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
         // SAFETY: `proc` is initialized by `PMIx_Init`
         let proc = unsafe { proc.assume_init() };
@@ -74,8 +73,7 @@ impl Client {
         // to free `val_p` below is no longer necessary.
         let mut val_p = MaybeUninit::<*mut sys::pmix_value_t>::uninit();
 
-        // SAFETY: `key` is a valid C string, `info` & `ninfo` match the data
-        // size. `val` is a single-element pointer.
+        // SAFETY: `key` is a valid C string, `val` is a single-element pointer.
         let status = unsafe {
             sys::PMIx_Get(
                 proc.map_or(ptr::null(), |p| p),
@@ -90,13 +88,12 @@ impl Client {
         // SAFETY: `val_p` is initialized by the call to PMIx_Get above. We now
         // own the pointed-to data, so it is free'd with `PMIx_Value_free`.
         // However, the value object we return also points to the same interior
-        // data, so we set the value type to `PMIX_UNDEF`, to move ownership of
-        // the interior data to the returned `sys::pmix_value_t`.
+        // data, so we set the type of `val_p` to `PMIX_UNDEF`, to move
+        // ownership of the interior data to the returned `sys::pmix_value_t`.
         unsafe {
             let val_p = val_p.assume_init();
             let val = val_p.read();
 
-            // Mark the source as PMIX_UNDEF, so the data we've moved into val is not free'd.
             (*val_p).type_ = sys::PMIX_UNDEF as u16;
             sys::PMIx_Value_free(val_p, 1);
             val
