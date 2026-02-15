@@ -30,7 +30,7 @@ fn spawn_client<D: peer::PeerDiscovery>(
     let mut cmd = Command::new(std::env::current_exe().unwrap());
     cmd.arg("client")
         .args(args)
-        .envs(&c.envs())
+        .envs(&c.envs().unwrap())
         .spawn()
         .unwrap()
 }
@@ -74,11 +74,11 @@ pub(crate) async fn run(args: ServerArgs) -> Result<(), Error> {
     let hostnames = peers.hostnames().collect::<Vec<_>>();
     let hostnames = hostnames.iter().map(|h| h.as_c_str()).collect::<Vec<_>>();
     let namespace = &CString::new(namespace).unwrap();
-    let n = pmix::server::Namespace::register(&s, namespace, &hostnames, nprocs);
+    let n = pmix::server::Namespace::register(&s, namespace, &hostnames, nprocs)?;
     let clients = peers
         .local_ranks(nprocs)
         .map(|i| pmix::server::Client::register(&n, i))
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, _>>()?;
 
     let ps = clients
         .iter()

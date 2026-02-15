@@ -1,8 +1,7 @@
 use std::{ffi, marker::PhantomData, slice, sync::RwLock};
-use thiserror::Error;
 use tokio::sync::mpsc;
 
-use super::{sys, slice_from_raw_parts};
+use super::{slice_from_raw_parts, sys, value::PmixError};
 
 pub type ModexCallback = (sys::pmix_modex_cbfunc_t, *mut ffi::c_void);
 pub type CData = (*mut ffi::c_char, usize);
@@ -28,9 +27,13 @@ pub enum State {
 
 pub static PMIX_STATE: RwLock<Option<State>> = RwLock::new(None);
 
-#[derive(Error, Debug)]
-#[error("PMIx was already initialized")]
-pub struct AlreadyInitialized();
+#[derive(thiserror::Error, Debug)]
+pub enum InitError {
+    #[error("PMIx operation returned error code {}", 0.0)]
+    PmixError(#[from] PmixError),
+    #[error("PMIx global state was already initialized")]
+    AlreadyInitialized,
+}
 
 pub struct Unsync(pub PhantomData<*const ()>);
 // SAFETY: This is a marker type, for `Send + !Sync`
@@ -87,6 +90,7 @@ unsafe extern "C" fn fence_nb(
     if ninfo_reqd > 0 {
         return sys::PMIX_ERR_NOT_SUPPORTED;
     };
+    #[allow(clippy::unwrap_used, reason = "no asserts poison the global state")]
     let guard = PMIX_STATE.read().unwrap();
 
     if let Some(State::Server(ref s)) = *guard {
@@ -124,6 +128,7 @@ unsafe extern "C" fn direct_modex(
     if ninfo_reqd > 0 {
         return sys::PMIX_ERR_NOT_SUPPORTED;
     };
+    #[allow(clippy::unwrap_used, reason = "no asserts poison the global state")]
     let guard = PMIX_STATE.read().unwrap();
 
     if let Some(State::Server(ref s)) = *guard {

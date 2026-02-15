@@ -48,6 +48,7 @@ impl<'a> DirectoryPeers<'a> {
         }
 
         let (tx, mut rx) = mpsc::channel(1);
+        #[allow(clippy::unwrap_used, reason = "watcher is dropped before the receiver")]
         let mut watcher = notify::recommended_watcher(move |res| tx.blocking_send(res).unwrap())?;
         watcher.watch(self.dir, notify::RecursiveMode::NonRecursive)?;
 
@@ -57,10 +58,15 @@ impl<'a> DirectoryPeers<'a> {
         }
 
         loop {
+            #[allow(
+                clippy::unwrap_used,
+                reason = "sender is not dropped until the last iteration"
+            )]
             let event = rx.recv().await.unwrap()?;
             if event.kind == notify::EventKind::Create(notify::event::CreateKind::File)
                 && event.paths.iter().any(|p| p == path)
             {
+                drop(watcher);
                 break Self::read_peer(path);
             }
         }

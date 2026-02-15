@@ -34,18 +34,22 @@ async fn main() -> Result<(), Error> {
 
     let tempdir = TempDir::new("pmi-k8s")?;
     let s = pmix::server::Server::init(fence, modex, tempdir.path())?;
-    let ns = pmix::server::Namespace::register(&s, namespace, &hostname_refs, args.nproc);
+    let ns = pmix::server::Namespace::register(&s, namespace, &hostname_refs, args.nproc)?;
     let clients = peers
         .local_ranks(args.nproc)
         .map(|i| pmix::server::Client::register(&ns, i))
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, _>>()?;
 
     let run = pin!(s.run());
     let rcs = clients
         .iter()
         .map(async |c| {
             let mut cmd = Command::new(&args.command);
-            cmd.envs(&c.envs()).args(&args.args).spawn()?.wait().await
+            cmd.envs(&c.envs().unwrap())
+                .args(&args.args)
+                .spawn()?
+                .wait()
+                .await
         })
         .collect::<FuturesUnordered<_>>()
         .try_collect::<Vec<_>>();

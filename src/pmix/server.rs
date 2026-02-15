@@ -11,7 +11,10 @@ use tokio::sync::mpsc;
 use crate::ModexError;
 
 use super::super::{fence, modex, peer};
-use super::{char_to_u8, env, globals, sys, value::Rank};
+use super::{
+    char_to_u8, env, globals, sys,
+    value::{PmixError, PmixStatus, Rank},
+};
 
 pub struct Server<'a, D: peer::PeerDiscovery> {
     fence: fence::NetFence<'a, D>,
@@ -27,7 +30,7 @@ impl<'a, D: peer::PeerDiscovery> Server<'a, D> {
         fence: fence::NetFence<'a, D>,
         modex: modex::NetModex<'a, D>,
         dirname: &'a Path,
-    ) -> Result<Self, globals::AlreadyInitialized> {
+    ) -> Result<Self, globals::InitError> {
         #[allow(clippy::unwrap_used, reason = "File paths cannot contain NULL bytes")]
         let dirname = ffi::CString::new(dirname.as_os_str().as_encoded_bytes()).unwrap();
         let infos: [sys::pmix_info_t; _] = [
@@ -37,19 +40,20 @@ impl<'a, D: peer::PeerDiscovery> Server<'a, D> {
         ];
         let mut module = globals::server_module();
 
+        #[allow(clippy::unwrap_used, reason = "no asserts poison the global state")]
         let mut guard = globals::PMIX_STATE.write().unwrap();
         // TODO: Also check sys::PMIx_Initialized()
         if guard.is_some() {
-            return Err(globals::AlreadyInitialized());
+            Err(globals::InitError::AlreadyInitialized)?;
         }
         let (tx, rx) = mpsc::unbounded_channel();
         *guard = Some(globals::State::Server(tx));
         // SAFETY: global state accessed by the function pointers in `module` is
         // populated. `infos` is a pointer to an info array of length `ninfo`.
-        let status =
-            unsafe { sys::PMIx_server_init(&mut module, infos.as_ptr() as *mut _, infos.len()) };
-        // FIXME: Don't poison the lock on failure
-        assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
+        PmixStatus(unsafe {
+            sys::PMIx_server_init(&mut module, infos.as_ptr() as *mut _, infos.len())
+        })
+        .check()?;
 
         Ok(Self {
             fence,
@@ -61,7 +65,10 @@ impl<'a, D: peer::PeerDiscovery> Server<'a, D> {
 
     async fn handle_events(&self) -> Result<Infallible, ModexError<D::Error>> {
         loop {
-            #[allow(clippy::unwrap_used, reason="Sender is only dropped in Server::drop()")]
+            #[allow(
+                clippy::unwrap_used,
+                reason = "Sender is only dropped in Server::drop()"
+            )]
             match self.rx.borrow_mut().recv().await.unwrap() {
                 globals::Event::Fence { procs, data, cb } => {
                     self.fence.submit(&procs, data, cb).await?
@@ -86,6 +93,8 @@ impl<'a, D: peer::PeerDiscovery> Drop for Server<'a, D> {
         // to acquire the server object being dropped.
         let status = unsafe { sys::PMIx_server_finalize() };
         assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
+
+        #[allow(clippy::unwrap_used, reason = "no asserts poison the global state")]
         let mut guard = globals::PMIX_STATE.write().unwrap();
         drop(guard.take());
     }
@@ -103,7 +112,7 @@ impl<'a, D: peer::PeerDiscovery> Namespace<'a, D> {
         namespace: &ffi::CStr,
         hostnames: &[&ffi::CStr],
         nlocalprocs: u16,
-    ) -> Self {
+    ) -> Result<Self, PmixError> {
         let namespace = char_to_u8(namespace.to_bytes_with_nul());
         let mut nspace: sys::pmix_nspace_t = [0; _];
         nspace[..namespace.len()].copy_from_slice(namespace);
@@ -142,7 +151,7 @@ impl<'a, D: peer::PeerDiscovery> Namespace<'a, D> {
             .collect::<Vec<_>>();
 
         // SAFETY: No significant safety concerns.
-        let status = unsafe {
+        PmixStatus(unsafe {
             sys::PMIx_server_register_nspace(
                 nspace.as_ptr(),
                 nlocalprocs as i32,
@@ -151,12 +160,12 @@ impl<'a, D: peer::PeerDiscovery> Namespace<'a, D> {
                 None,
                 std::ptr::null_mut(),
             )
-        };
-        assert_eq!(status, sys::PMIX_OPERATION_SUCCEEDED as sys::pmix_status_t);
-        Self {
+        })
+        .check()?;
+        Ok(Self {
             nspace,
             server: PhantomData,
-        }
+        })
     }
 }
 
@@ -176,7 +185,7 @@ pub struct Client<'a, D: peer::PeerDiscovery> {
 }
 
 impl<'a, D: peer::PeerDiscovery> Client<'a, D> {
-    pub fn register(namespace: &'a Namespace<D>, rank: u32) -> Self {
+    pub fn register(namespace: &'a Namespace<D>, rank: u32) -> Result<Self, PmixError> {
         let uid = nix::unistd::geteuid();
         let gid = nix::unistd::getegid();
 
@@ -185,7 +194,8 @@ impl<'a, D: peer::PeerDiscovery> Client<'a, D> {
             rank,
         };
 
-        let status = unsafe {
+        // SAFETY: No significant safety concerns.
+        PmixStatus(unsafe {
             sys::PMIx_server_register_client(
                 &proc,
                 uid.as_raw(),
@@ -194,23 +204,23 @@ impl<'a, D: peer::PeerDiscovery> Client<'a, D> {
                 None,
                 ptr::null_mut(),
             )
-        };
-        assert_eq!(status, sys::PMIX_OPERATION_SUCCEEDED as sys::pmix_status_t);
-        Client {
+        })
+        .check()?;
+        Ok(Client {
             proc,
             namespace: PhantomData,
-        }
+        })
     }
 
-    pub fn envs(&self) -> env::EnvVars {
+    pub fn envs(&self) -> Result<env::EnvVars, PmixError> {
         let mut env = ptr::null_mut();
         // SAFETY: `self.proc` is an initialized client, and `env` is a pointer
         // to an empty `argv`-style array.
-        let status = unsafe { sys::PMIx_server_setup_fork(&self.proc, &mut env) };
-        assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
+        PmixStatus(unsafe { sys::PMIx_server_setup_fork(&self.proc, &mut env) }).check()?;
         // SAFETY: The env array was created by `PMIx_server_setup_fork`, so is
         // in the correct format (`argv`-style) for `EnvVars`.
-        unsafe { env::EnvVars::from_ptr(env) }
+        let env = unsafe { env::EnvVars::from_ptr(env) };
+        Ok(env)
     }
 }
 

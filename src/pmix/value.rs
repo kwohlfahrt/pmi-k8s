@@ -1,7 +1,31 @@
 use std::ffi::{CStr, c_void};
+use std::fmt::Display;
 use std::mem::MaybeUninit;
 
 use super::sys;
+
+pub struct PmixStatus(pub sys::pmix_status_t);
+
+const PMIX_SUCCESS: sys::pmix_status_t = sys::PMIX_SUCCESS as sys::pmix_status_t;
+
+impl PmixStatus {
+    pub fn check(&self) -> Result<(), PmixError> {
+        match self.0 {
+            PMIX_SUCCESS => Ok(()),
+            sys::PMIX_OPERATION_SUCCEEDED => Ok(()),
+            e => Err(PmixError(e)),
+        }
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub struct PmixError(pub sys::pmix_status_t);
+
+impl Display for PmixError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("PmixError({})", self.0))
+    }
+}
 
 impl Drop for sys::pmix_value_t {
     fn drop(&mut self) {

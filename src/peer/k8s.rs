@@ -106,6 +106,10 @@ impl PeerDiscovery for KubernetesPeers {
 
     async fn peer(&self, node_rank: u32) -> Result<net::SocketAddr, Self::Error> {
         let mut pod_ips = pin!(self.watch_pods(Some(node_rank)));
+        #[allow(
+            clippy::unwrap_used,
+            reason = "watcher streams automatically recover from errors"
+        )]
         let pod_ip = pod_ips.next().await.unwrap()?;
         // FIXME: Hack - adding +1 here because this method is used by modex, and peers() is used by fences
         Ok(net::SocketAddr::new(pod_ip.1, PORT + 1))
@@ -115,6 +119,10 @@ impl PeerDiscovery for KubernetesPeers {
         let mut peers = HashMap::new();
         let mut pod_ips = pin!(self.watch_pods(None));
         while peers.len() < self.nnodes as usize {
+            #[allow(
+                clippy::unwrap_used,
+                reason = "watcher streams automatically recover from errors"
+            )]
             let (rank, pod_ip) = pod_ips.next().await.unwrap()?;
             peers.insert(rank, net::SocketAddr::new(pod_ip, PORT));
         }
