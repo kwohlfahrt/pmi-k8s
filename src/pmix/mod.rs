@@ -33,3 +33,16 @@ pub fn u8_to_char(bytes: &[u8]) -> &[ffi::c_char] {
     // SAFETY: This is the recommended way to transmute [u8] to [ffi::c_char]
     unsafe { slice::from_raw_parts(ptr as *const ffi::c_char, bytes.len()) }
 }
+
+/// # SAFETY
+///
+/// Safety requirements are exactly as for `std::slice::from_raw_parts`, except
+/// `data` may be `NULL`.
+pub unsafe fn slice_from_raw_parts<'a, T>(data: *const T, ndata: usize) -> &'a [T] {
+    if !data.is_null() {
+        // SAFETY: satisfied by this function's safety requirements.
+        unsafe { slice::from_raw_parts(data, ndata) }
+    } else {
+        &[]
+    }
+}

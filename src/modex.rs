@@ -1,5 +1,5 @@
 use core::ffi;
-use std::{convert::Infallible, io, mem, net::SocketAddr, slice, time::Duration};
+use std::{convert::Infallible, io, mem, net::SocketAddr, time::Duration};
 
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -11,7 +11,7 @@ use tokio::{
 use crate::{
     ModexError,
     peer::PeerDiscovery,
-    pmix::{char_to_u8, globals, sys, u8_to_char},
+    pmix::{char_to_u8, globals, slice_from_raw_parts, sys, u8_to_char},
 };
 
 unsafe extern "C" fn response(
@@ -21,15 +21,9 @@ unsafe extern "C" fn response(
     cbdata: *mut std::ffi::c_void,
 ) {
     assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
-    let data = if !data.is_null() {
-        // SAFETY: Data is a pointer to [ffi::c_char; sz], and we have checked
-        // for `null` ourselves.
-        let slice = unsafe { slice::from_raw_parts(data, sz) };
-        // Data is owned by PMIx, so we must copy
-        char_to_u8(slice).to_vec()
-    } else {
-        Vec::new()
-    };
+    // SAFETY: Data is owned by PMIx and free'd after this function, so we must
+    // copy before returning.
+    let data = unsafe { slice_from_raw_parts(data, sz) }.to_vec();
 
     // SAFETY: We created `cbdata`` in `NetModex::respond`, from `oneshot::Sender<Vec<u8>>`
     let tx = *unsafe { Box::from_raw(cbdata as *mut oneshot::Sender<Vec<u8>>) };

@@ -2,7 +2,7 @@ use std::{ffi, marker::PhantomData, slice, sync::RwLock};
 use thiserror::Error;
 use tokio::sync::mpsc;
 
-use super::sys;
+use super::{sys, slice_from_raw_parts};
 
 pub type ModexCallback = (sys::pmix_modex_cbfunc_t, *mut ffi::c_void);
 pub type CData = (*mut ffi::c_char, usize);
@@ -72,7 +72,8 @@ unsafe extern "C" fn fence_nb(
     cbfunc: sys::pmix_modex_cbfunc_t,
     cbdata: *mut std::ffi::c_void,
 ) -> sys::pmix_status_t {
-    let info = unsafe { std::slice::from_raw_parts(info, ninfo) };
+    // SAFETY: `info` is provided by `libpmix`, and is valid for this function.
+    let info = unsafe { slice_from_raw_parts(info, ninfo) };
     let ninfo_reqd = info
         .iter()
         .filter(|i| {
@@ -111,7 +112,8 @@ unsafe extern "C" fn direct_modex(
     cbfunc: sys::pmix_modex_cbfunc_t,
     cbdata: *mut std::ffi::c_void,
 ) -> sys::pmix_status_t {
-    let info = unsafe { std::slice::from_raw_parts(info, ninfo) };
+    // SAFETY: `info` is provided by `libpmix`, and is valid for this function.
+    let info = unsafe { slice_from_raw_parts(info, ninfo) };
     let ninfo_reqd = info
         .iter()
         .filter(|i| {
