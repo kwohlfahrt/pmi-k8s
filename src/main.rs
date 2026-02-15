@@ -52,7 +52,7 @@ async fn main() -> Result<(), Error> {
 
     let rcs = match select(rcs, run).await {
         Either::Left((rcs, _)) => rcs?,
-        Either::Right((err, _)) => err?,
+        Either::Right((Err(err), _)) => Err(err)?,
     };
 
     assert!(rcs.iter().all(|rc| rc.success()));

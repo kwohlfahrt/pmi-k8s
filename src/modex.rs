@@ -1,5 +1,5 @@
 use core::ffi;
-use std::{io, mem, net::SocketAddr, slice, time::Duration};
+use std::{convert::Infallible, io, mem, net::SocketAddr, slice, time::Duration};
 
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -174,7 +174,7 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
         Ok(())
     }
 
-    pub async fn serve(&self) -> Result<!, ModexError<D::Error>> {
+    pub async fn serve(&self) -> Result<Infallible, ModexError<D::Error>> {
         loop {
             // TODO: Process incoming requests in parallel
             let (c, _) = self.listener.accept().await?;

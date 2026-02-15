@@ -1,5 +1,6 @@
 use futures::future::select;
 use std::cell::RefCell;
+use std::convert::Infallible;
 use std::ffi;
 use std::marker::PhantomData;
 use std::path::Path;
@@ -56,7 +57,7 @@ impl<'a, D: peer::PeerDiscovery> Server<'a, D> {
         })
     }
 
-    async fn handle_events(&self) -> Result<!, ModexError<D::Error>> {
+    async fn handle_events(&self) -> Result<Infallible, ModexError<D::Error>> {
         loop {
             match self.rx.borrow_mut().recv().await.unwrap() {
                 globals::Event::Fence { procs, data, cb } => {
@@ -67,7 +68,7 @@ impl<'a, D: peer::PeerDiscovery> Server<'a, D> {
         }
     }
 
-    pub async fn run(&self) -> Result<!, ModexError<D::Error>> {
+    pub async fn run(&self) -> Result<Infallible, ModexError<D::Error>> {
         let events = pin!(self.handle_events());
         let modex = pin!(self.modex.serve());
         select(events, modex).await.factor_first().0

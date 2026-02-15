@@ -1,5 +1,3 @@
-#![feature(never_type)]
-
 use std::{error::Error, fmt, io};
 
 use clap::Parser;
