@@ -6,6 +6,7 @@ use super::{slice_from_raw_parts, sys, value::PmixError};
 pub type ModexCallback = (sys::pmix_modex_cbfunc_t, *mut ffi::c_void);
 pub type CData = (*mut ffi::c_char, usize);
 
+#[allow(clippy::large_enum_variant, reason = "pmix_proc_t is large")]
 pub enum Event {
     Fence {
         procs: Vec<sys::pmix_proc_t>,
