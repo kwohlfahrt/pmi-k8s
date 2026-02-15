@@ -2,22 +2,20 @@ use futures::future::select;
 use std::cell::RefCell;
 use std::ffi;
 use std::marker::PhantomData;
+use std::path::Path;
 use std::pin::pin;
 use std::ptr;
 use tokio::sync::mpsc;
 
-use tempdir::TempDir;
-
 use crate::ModexError;
 
 use super::super::{fence, modex, peer};
-use super::{env, globals, sys, value::Rank};
+use super::{char_to_u8, env, globals, sys, value::Rank};
 
 pub struct Server<'a, D: peer::PeerDiscovery> {
     fence: fence::NetFence<'a, D>,
     modex: modex::NetModex<'a, D>,
     rx: RefCell<mpsc::UnboundedReceiver<globals::Event>>,
-    _tmpdir: TempDir,
     // I'm not sure what PMIx functions are thread-safe, so mark the server as
     // !Sync. Server::init enforces that only one is live at a time.
     _marker: globals::Unsync,
@@ -27,9 +25,10 @@ impl<'a, D: peer::PeerDiscovery> Server<'a, D> {
     pub fn init(
         fence: fence::NetFence<'a, D>,
         modex: modex::NetModex<'a, D>,
+        dirname: &'a Path,
     ) -> Result<Self, globals::AlreadyInitialized> {
-        let tmpdir = TempDir::new("pmix-server").unwrap();
-        let dirname = ffi::CString::new(tmpdir.path().as_os_str().as_encoded_bytes()).unwrap();
+        #[allow(clippy::unwrap_used, reason = "File paths cannot contain NULL bytes")]
+        let dirname = ffi::CString::new(dirname.as_os_str().as_encoded_bytes()).unwrap();
         let infos: [sys::pmix_info_t; _] = [
             (sys::PMIX_SERVER_TMPDIR, dirname.as_c_str()).into(),
             (sys::PMIX_SYSTEM_TMPDIR, dirname.as_c_str()).into(),
@@ -53,7 +52,6 @@ impl<'a, D: peer::PeerDiscovery> Server<'a, D> {
             fence,
             modex,
             rx: RefCell::new(rx),
-            _tmpdir: tmpdir,
             _marker: globals::Unsync(PhantomData),
         })
     }
@@ -78,10 +76,14 @@ impl<'a, D: peer::PeerDiscovery> Server<'a, D> {
 
 impl<'a, D: peer::PeerDiscovery> Drop for Server<'a, D> {
     fn drop(&mut self) {
+        // SAFETY: We call server finalize before dropping the global state, to
+        // ensure libpmix does not call the global functions without the
+        // required state set up. We must have called `PMIx_server_init` before,
+        // to acquire the server object being dropped.
+        let status = unsafe { sys::PMIx_server_finalize() };
+        assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
         let mut guard = globals::PMIX_STATE.write().unwrap();
         drop(guard.take());
-        let status = unsafe { sys::PMIx_server_finalize() };
-        assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t)
     }
 }
 
@@ -98,10 +100,7 @@ impl<'a, D: peer::PeerDiscovery> Namespace<'a, D> {
         hostnames: &[&ffi::CStr],
         nlocalprocs: u16,
     ) -> Self {
-        let namespace = namespace.to_bytes_with_nul();
-        let namespace = unsafe {
-            std::slice::from_raw_parts(namespace.as_ptr() as *const libc::c_char, namespace.len())
-        };
+        let namespace = char_to_u8(namespace.to_bytes_with_nul());
         let mut nspace: sys::pmix_nspace_t = [0; _];
         nspace[..namespace.len()].copy_from_slice(namespace);
 
@@ -158,6 +157,8 @@ impl<'a, D: peer::PeerDiscovery> Namespace<'a, D> {
 
 impl<'a, D: peer::PeerDiscovery> Drop for Namespace<'a, D> {
     fn drop(&mut self) {
+        // SAFETY: We must have called `PMIx_server_register_nspace` to acquire
+        // the namespace object being dropped.
         unsafe {
             sys::PMIx_server_deregister_nspace(self.nspace.as_ptr(), None, ptr::null_mut());
         }
@@ -198,14 +199,20 @@ impl<'a, D: peer::PeerDiscovery> Client<'a, D> {
 
     pub fn envs(&self) -> env::EnvVars {
         let mut env = ptr::null_mut();
+        // SAFETY: `self.proc` is an initialized client, and `env` is a pointer
+        // to an empty `argv`-style array.
         let status = unsafe { sys::PMIx_server_setup_fork(&self.proc, &mut env) };
         assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
+        // SAFETY: The env array was created by `PMIx_server_setup_fork`, so is
+        // in the correct format (`argv`-style) for `EnvVars`.
         unsafe { env::EnvVars::from_ptr(env) }
     }
 }
 
 impl<'a, D: peer::PeerDiscovery> Drop for Client<'a, D> {
     fn drop(&mut self) {
+        // SAFETY: We must have called `PMIx_server_register_client` to acquire
+        // the client object being dropped.
         unsafe {
             sys::PMIx_server_deregister_client(&self.proc, None, ptr::null_mut());
         }
@@ -229,7 +236,7 @@ mod test {
     async fn test_server_init() {
         assert!(!is_initialized());
         {
-            let tempdir = TempDir::new("server").unwrap();
+            let tempdir = TempDir::new("peers").unwrap();
             let discovery = DirectoryPeers::new(tempdir.path(), 1);
             let fence = fence::NetFence::new(
                 net::SocketAddr::new(net::Ipv4Addr::LOCALHOST.into(), 0),
@@ -244,7 +251,9 @@ mod test {
             )
             .await
             .unwrap();
-            let _s = Server::init(fence, modex).unwrap();
+
+            let tempdir = TempDir::new("server").unwrap();
+            let _s = Server::init(fence, modex, tempdir.path()).unwrap();
             assert!(is_initialized());
         }
         assert!(!is_initialized());

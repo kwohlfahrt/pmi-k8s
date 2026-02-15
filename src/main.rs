@@ -1,5 +1,6 @@
 use clap::Parser;
 use std::{net, pin::pin, process::Command};
+use tempdir::TempDir;
 
 use anyhow::Error;
 
@@ -35,7 +36,8 @@ async fn main() -> Result<(), Error> {
     let hostnames = peers.hostnames().collect::<Vec<_>>();
     let hostname_refs = hostnames.iter().map(|h| h.as_c_str()).collect::<Vec<_>>();
 
-    let s = pmix::server::Server::init(fence, modex).unwrap();
+    let tempdir = TempDir::new("pmi-k8s").unwrap();
+    let s = pmix::server::Server::init(fence, modex, tempdir.path()).unwrap();
     let ns = pmix::server::Namespace::register(&s, namespace, &hostname_refs, args.nproc);
     let clients = peers
         .local_ranks(args.nproc)
