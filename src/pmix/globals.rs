@@ -1,7 +1,7 @@
 use std::{ffi, marker::PhantomData, ops::Deref, slice, sync::RwLock};
 use tokio::sync::mpsc;
 
-use crate::pmix::u8_to_char;
+use crate::pmix::{char_to_u8, u8_to_char};
 
 use super::{slice_from_raw_parts, sys, value::PmixError};
 
@@ -58,7 +58,8 @@ impl Deref for CData {
         // SAFETY: We own the data for our own lifetime. `slice_from_raw_parts`
         // handles the NULL check for us, and there are no alignment
         // requirements for `u8`.
-        unsafe { slice_from_raw_parts(self.0, self.1) }
+        let data = unsafe { slice_from_raw_parts(self.0, self.1) };
+        char_to_u8(data)
     }
 }
 

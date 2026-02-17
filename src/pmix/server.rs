@@ -12,7 +12,7 @@ use crate::ModexError;
 
 use super::super::{fence, modex, peer};
 use super::{
-    char_to_u8, env, globals, sys,
+    u8_to_char, env, globals, sys,
     value::{PmixError, PmixStatus, Rank},
 };
 
@@ -113,9 +113,9 @@ impl<'a, D: peer::PeerDiscovery> Namespace<'a, D> {
         hostnames: &[&ffi::CStr],
         nlocalprocs: u16,
     ) -> Result<Self, PmixError> {
-        let namespace = char_to_u8(namespace.to_bytes_with_nul());
+        let namespace = namespace.to_bytes_with_nul();
         let mut nspace: sys::pmix_nspace_t = [0; _];
-        nspace[..namespace.len()].copy_from_slice(namespace);
+        nspace[..namespace.len()].copy_from_slice(u8_to_char(namespace));
 
         let nnodes = hostnames.len() as u32;
 

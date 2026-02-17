@@ -23,7 +23,8 @@ unsafe extern "C" fn response(
     assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
     // SAFETY: Data is owned by PMIx and free'd after this function, so we must
     // copy before returning.
-    let data = unsafe { slice_from_raw_parts(data, sz) }.to_vec();
+    let data = unsafe { slice_from_raw_parts(data, sz) };
+    let data = char_to_u8(data).to_vec();
 
     // SAFETY: We created `cbdata`` in `NetModex::respond`, from `oneshot::Sender<Vec<u8>>`
     let tx = *unsafe { Box::from_raw(cbdata as *mut oneshot::Sender<Vec<u8>>) };
