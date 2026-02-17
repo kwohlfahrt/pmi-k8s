@@ -1,4 +1,4 @@
-use std::{ffi, marker::PhantomData, slice, sync::RwLock};
+use std::{ffi, marker::PhantomData, ops::Deref, slice, sync::RwLock};
 use tokio::sync::mpsc;
 
 use crate::pmix::u8_to_char;
@@ -33,7 +33,42 @@ impl ModexCallback {
     }
 }
 
-pub type CData = (*mut ffi::c_char, usize);
+pub struct CData(*mut ffi::c_char, usize);
+
+// SAFETY: Just a bunch of (read-only) bytes.
+unsafe impl Send for CData {}
+
+// SAFETY: Just a bunch of (read-only) bytes.
+unsafe impl Sync for CData {}
+
+impl CData {
+    /// # Safety
+    ///
+    /// `ptr` must be allocated with `libc::malloc`, and point to `size` bytes.
+    /// We take ownership of `ptr` and `libc::free` it on drop.
+    pub unsafe fn from_raw_parts(ptr: *mut ffi::c_char, size: usize) -> Self {
+        Self(ptr, size)
+    }
+}
+
+impl Deref for CData {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: We own the data for our own lifetime. `slice_from_raw_parts`
+        // handles the NULL check for us, and there are no alignment
+        // requirements for `u8`.
+        unsafe { slice_from_raw_parts(self.0, self.1) }
+    }
+}
+
+impl Drop for CData {
+    fn drop(&mut self) {
+        // SAFETY: We are responsible for free'ing the data passed to us. I
+        // assume this means libc::free.
+        unsafe { libc::free(self.0 as *mut ffi::c_void) }
+    }
+}
 
 #[allow(clippy::large_enum_variant, reason = "pmix_proc_t is large")]
 pub enum Event {
@@ -47,8 +82,6 @@ pub enum Event {
         cb: ModexCallback,
     },
 }
-
-unsafe impl Send for Event {}
 
 pub enum State {
     Client,
@@ -127,7 +160,9 @@ unsafe extern "C" fn fence_nb(
         // SAFETY: At least one proc must be participating in the fence, so procs must be valid
         let procs = unsafe { slice::from_raw_parts(procs, nprocs) }.into();
         let cb = ModexCallback(cbfunc, cbdata);
-        let data = (data, ndata);
+        // SAFETY: According to the standard, we (the host) are responsible for
+        // free'ing the data passed to `fence_nb`.
+        let data = unsafe { CData::from_raw_parts(data, ndata) };
         // mpsc::UnboundedSender::send() only fails if the receiver is dropped,
         // which only happens in Server::drop, which clears PMIX_STATE and calls
         // PMIx_server_finalize (deactivating this callback).
