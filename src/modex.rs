@@ -128,24 +128,8 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
         proc: sys::pmix_proc_t,
         callback: globals::ModexCallback,
     ) -> Result<(), ModexError<D::Error>> {
-        let (Some(cbfunc), cbdata) = callback else {
-            return Ok(());
-        };
-        let acc = Box::new(self.request_data(proc).await?);
-        let data = u8_to_char(&acc);
-
-        // TODO: Create ModexCallback wrapper that handles this.
-        // SAFETY: `data` lives as long as `acc`, which is freed by libpmix using `release_vec_u8`.
-        unsafe {
-            cbfunc(
-                sys::PMIX_SUCCESS as sys::pmix_status_t,
-                data.as_ptr(),
-                data.len(),
-                cbdata,
-                Some(globals::release_vec_u8),
-                Box::into_raw(acc) as *mut ffi::c_void,
-            )
-        };
+        let data = self.request_data(proc).await?;
+        callback.call(sys::PMIX_SUCCESS as sys::pmix_status_t, data);
         Ok(())
     }
 

@@ -10,7 +10,7 @@ use tokio::{net, time};
 
 use super::ModexError;
 use crate::peer::PeerDiscovery;
-use crate::pmix::{char_to_u8, globals, sys, u8_to_char};
+use crate::pmix::{char_to_u8, globals, sys};
 
 pub struct NetFence<'a, D: PeerDiscovery> {
     listener: net::TcpListener,
@@ -103,25 +103,9 @@ impl<'a, D: PeerDiscovery> NetFence<'a, D> {
         data: globals::CData,
         callback: globals::ModexCallback,
     ) -> Result<(), ModexError<D::Error>> {
-        let (Some(cbfunc), cbdata) = callback else {
-            return Ok(());
-        };
         let data = Self::load_data(data);
-        let acc = Box::new(self.submit_data(procs, &data).await?);
-        let data = u8_to_char(&acc);
-
-        // TODO: Create ModexCallback wrapper that handles this.
-        // SAFETY: `data` lives as long as `acc`, which is freed by libpmix using `release_vec_u8`.
-        unsafe {
-            cbfunc(
-                sys::PMIX_SUCCESS as sys::pmix_status_t,
-                data.as_ptr(),
-                data.len(),
-                cbdata,
-                Some(globals::release_vec_u8),
-                Box::into_raw(acc) as *mut ffi::c_void,
-            )
-        };
+        let data = self.submit_data(procs, &data).await?;
+        callback.call(sys::PMIX_SUCCESS as sys::pmix_status_t, data);
         Ok(())
     }
 }

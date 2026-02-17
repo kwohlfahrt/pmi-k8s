@@ -1,9 +1,38 @@
 use std::{ffi, marker::PhantomData, slice, sync::RwLock};
 use tokio::sync::mpsc;
 
+use crate::pmix::u8_to_char;
+
 use super::{slice_from_raw_parts, sys, value::PmixError};
 
-pub type ModexCallback = (sys::pmix_modex_cbfunc_t, *mut ffi::c_void);
+pub struct ModexCallback(sys::pmix_modex_cbfunc_t, *mut ffi::c_void);
+
+// SAFETY: A single-use callback + data.
+unsafe impl Send for ModexCallback {}
+
+impl ModexCallback {
+    pub fn call(self, status: sys::pmix_status_t, data: Vec<u8>) {
+        let Some(cbfunc) = self.0 else {
+            return;
+        };
+
+        let data = Box::new(data);
+        let char_data = u8_to_char(&data);
+
+        // SAFETY: `char_data` lives as long as `data`, which is freed by libpmix using `release_vec_u8`.
+        unsafe {
+            cbfunc(
+                status,
+                char_data.as_ptr(),
+                char_data.len(),
+                self.1,
+                Some(release_vec_u8),
+                Box::into_raw(data) as *mut ffi::c_void,
+            )
+        }
+    }
+}
+
 pub type CData = (*mut ffi::c_char, usize);
 
 #[allow(clippy::large_enum_variant, reason = "pmix_proc_t is large")]
@@ -15,7 +44,7 @@ pub enum Event {
     },
     DirectModex {
         proc: sys::pmix_proc_t,
-        cb: (sys::pmix_modex_cbfunc_t, *mut ffi::c_void),
+        cb: ModexCallback,
     },
 }
 
@@ -97,7 +126,7 @@ unsafe extern "C" fn fence_nb(
     if let Some(State::Server(ref s)) = *guard {
         // SAFETY: At least one proc must be participating in the fence, so procs must be valid
         let procs = unsafe { slice::from_raw_parts(procs, nprocs) }.into();
-        let cb = (cbfunc, cbdata);
+        let cb = ModexCallback(cbfunc, cbdata);
         let data = (data, ndata);
         // mpsc::UnboundedSender::send() only fails if the receiver is dropped,
         // which only happens in Server::drop, which clears PMIX_STATE and calls
@@ -135,7 +164,7 @@ unsafe extern "C" fn direct_modex(
     if let Some(State::Server(ref s)) = *guard {
         // SAFETY: `proc` is passed to us by libpmix, assume it is valid.
         let proc = unsafe { *proc };
-        let cb = (cbfunc, cbdata);
+        let cb = ModexCallback(cbfunc, cbdata);
         // mpsc::UnboundedSender::send() only fails if the receiver is dropped,
         // which only happens in Server::drop, which clears PMIX_STATE and calls
         // PMIx_server_finalize (deactivating this callback).
