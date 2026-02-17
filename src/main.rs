@@ -43,13 +43,10 @@ async fn main() -> Result<(), Error> {
     let run = pin!(s.run());
     let rcs = clients
         .iter()
-        .map(async |c| {
+        .map(async |c| -> Result<_, Error> {
+            let envs = c.envs()?;
             let mut cmd = Command::new(&args.command);
-            cmd.envs(&c.envs().unwrap())
-                .args(&args.args)
-                .spawn()?
-                .wait()
-                .await
+            Ok(cmd.envs(&envs).args(&args.args).spawn()?.wait().await?)
         })
         .collect::<FuturesUnordered<_>>()
         .try_collect::<Vec<_>>();
