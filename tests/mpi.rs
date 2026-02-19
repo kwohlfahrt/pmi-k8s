@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
+
 use std::process::Command;
 
 use tempdir::TempDir;

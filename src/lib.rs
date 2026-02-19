@@ -1,9 +1,19 @@
+use std::{error::Error, fmt, io};
+
 use clap::Parser;
 
 pub mod fence;
 pub mod modex;
 pub mod peer;
 pub mod pmix;
+
+#[derive(Debug, thiserror::Error)]
+pub enum ModexError<E: Error + fmt::Debug> {
+    #[error("error in modex communication")]
+    Io(#[from] io::Error),
+    #[error("error in peer discovery")]
+    Peer(E),
+}
 
 #[derive(Parser, Debug)]
 pub struct Cli {
@@ -17,6 +27,7 @@ pub struct Cli {
 
 #[cfg(test)]
 mod test {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]
@@ -29,6 +40,12 @@ mod test {
 
         let cli =
             Cli::try_parse_from(["pmi-k8s", "--nproc=2", "foo", "--", "bar", "--baz"]).unwrap();
+        assert_eq!(cli.nproc, 2);
+        assert_eq!(cli.command, "foo");
+        assert_eq!(cli.args, ["bar", "--baz"]);
+
+        let cli =
+            Cli::try_parse_from(["pmi-k8s", "--nproc=2", "--", "foo", "bar", "--baz"]).unwrap();
         assert_eq!(cli.nproc, 2);
         assert_eq!(cli.command, "foo");
         assert_eq!(cli.args, ["bar", "--baz"]);

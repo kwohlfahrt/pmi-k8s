@@ -1,16 +1,44 @@
 use std::ffi::{CStr, c_void};
+use std::fmt::Display;
 use std::mem::MaybeUninit;
 
 use super::sys;
 
+pub struct PmixStatus(pub sys::pmix_status_t);
+
+const PMIX_SUCCESS: sys::pmix_status_t = sys::PMIX_SUCCESS as sys::pmix_status_t;
+
+impl PmixStatus {
+    pub fn check(&self) -> Result<(), PmixError> {
+        match self.0 {
+            PMIX_SUCCESS => Ok(()),
+            sys::PMIX_OPERATION_SUCCEEDED => Ok(()),
+            e => Err(PmixError(e)),
+        }
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub struct PmixError(pub sys::pmix_status_t);
+
+impl Display for PmixError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("PmixError({})", self.0))
+    }
+}
+
 impl Drop for sys::pmix_value_t {
     fn drop(&mut self) {
+        // SAFETY: This is the destructor for this type. It frees any nested
+        // values, but does not release the top-level value.
         unsafe { sys::PMIx_Value_destruct(self) };
     }
 }
 
 impl Drop for sys::pmix_info_t {
     fn drop(&mut self) {
+        // SAFETY: This is the destructor for this type. It frees any nested
+        // values, but does not release the top-level value.
         unsafe { sys::PMIx_Info_destruct(self) };
     }
 }
@@ -19,11 +47,12 @@ impl From<&CStr> for sys::pmix_value_t {
     fn from(src: &CStr) -> Self {
         let tag = sys::PMIX_STRING as u16;
         let mut v = MaybeUninit::<Self>::uninit();
-        // PMIx_Value_load copies data out of src
+        // SAFETY: `data` is the correct type for tag, and is copied
         let status = unsafe {
             sys::PMIx_Value_load(v.as_mut_ptr(), src as *const CStr as *const c_void, tag)
         };
         assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
+        // SAFETY: v was initialized by PMIx_Value_load
         unsafe { v.assume_init() }
     }
 }
@@ -33,7 +62,9 @@ impl From<(&CStr, &CStr)> for sys::pmix_info_t {
         let tag = sys::PMIX_STRING as u16;
         let key = key.as_ptr();
         let mut v = MaybeUninit::<Self>::uninit();
-        // PMIx_Info_load copies data out of src
+        // SAFETY: `data` is the correct type for tag, and is copied.
+        // FIXME: `key` must match the value type, downstream assumes they are
+        // as per the standard. We should enforce this at the type level.
         let status = unsafe {
             sys::PMIx_Info_load(
                 v.as_mut_ptr(),
@@ -43,6 +74,7 @@ impl From<(&CStr, &CStr)> for sys::pmix_info_t {
             )
         };
         assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
+        // SAFETY: v was initialized by PMIx_Info_load
         unsafe { v.assume_init() }
     }
 }
@@ -57,7 +89,7 @@ impl From<&[sys::pmix_value_t]> for sys::pmix_value_t {
         };
 
         let mut v = MaybeUninit::<Self>::uninit();
-        // PMIx_Value_load copies data out of src
+        // SAFETY: `data` is the correct type for tag, and is copied
         let status = unsafe {
             sys::PMIx_Value_load(
                 v.as_mut_ptr(),
@@ -66,6 +98,7 @@ impl From<&[sys::pmix_value_t]> for sys::pmix_value_t {
             )
         };
         assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
+        // SAFETY: v was initialized by PMIx_Value_load
         unsafe { v.assume_init() }
     }
 }
@@ -81,7 +114,9 @@ impl From<(&CStr, &[sys::pmix_info_t])> for sys::pmix_info_t {
         };
 
         let mut v = MaybeUninit::<Self>::uninit();
-        // PMIx_Info_load copies data out of src
+        // SAFETY: `data` is the correct type for tag, and is copied.
+        // FIXME: `key` must match the value type, downstream assumes they are
+        // as per the standard. We should enforce this at the type level.
         let status = unsafe {
             sys::PMIx_Info_load(
                 v.as_mut_ptr(),
@@ -91,6 +126,7 @@ impl From<(&CStr, &[sys::pmix_info_t])> for sys::pmix_info_t {
             )
         };
         assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
+        // SAFETY: v was initialized by PMIx_Info_load
         unsafe { v.assume_init() }
     }
 }
@@ -102,11 +138,12 @@ macro_rules! pmix_value_from {
                 let src = &src;
                 let tag = sys::$tag as u16;
                 let mut v = MaybeUninit::<Self>::uninit();
-                // PMIx_Value_load copies data out of src
+                // SAFETY: `data` is the correct type for tag, and is copied
                 let status = unsafe {
                     sys::PMIx_Value_load(v.as_mut_ptr(), src as *const $t as *const c_void, tag)
                 };
                 assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
+                // SAFETY: v was initialized by PMIx_Value_load
                 unsafe { v.assume_init() }
             }
         }
@@ -117,11 +154,14 @@ macro_rules! pmix_value_from {
                 let src = &src;
                 let key = key.as_ptr();
                 let mut v = MaybeUninit::<Self>::uninit();
-                // PMIx_Info_load copies data out of src
+                // SAFETY: `data` is the correct type for tag, and is copied.
+                // FIXME: `key` must match the value type, downstream assumes they are
+                // as per the standard. We should enforce this at the type level.
                 let status = unsafe {
                     sys::PMIx_Info_load(v.as_mut_ptr(), key, src as *const $t as *const c_void, tag)
                 };
                 assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
+                // SAFETY: v was initialized by PMIx_Info_load
                 unsafe { v.assume_init() }
             }
         }
@@ -137,11 +177,12 @@ macro_rules! pmix_value_from_newtype {
                 let src = &src.0;
                 let tag = sys::$tag as u16;
                 let mut v = MaybeUninit::<Self>::uninit();
-                // PMIx_Value_load copies data out of src
+                // SAFETY: `data` is the correct type for tag, and is copied
                 let status = unsafe {
                     sys::PMIx_Value_load(v.as_mut_ptr(), src as *const $t as *const c_void, tag)
                 };
                 assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
+                // SAFETY: v was initialized by PMIx_Value_load
                 unsafe { v.assume_init() }
             }
         }
@@ -152,11 +193,14 @@ macro_rules! pmix_value_from_newtype {
                 let src = &src.0;
                 let key = key.as_ptr();
                 let mut v = MaybeUninit::<Self>::uninit();
-                // PMIx_Info_load copies data out of src
+                // SAFETY: `data` is the correct type for tag, and is copied.
+                // FIXME: `key` must match the value type, downstream assumes they are
+                // as per the standard. We should enforce this at the type level.
                 let status = unsafe {
                     sys::PMIx_Info_load(v.as_mut_ptr(), key, src as *const $t as *const c_void, tag)
                 };
                 assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
+                // SAFETY: v was initialized by PMIx_Info_load
                 unsafe { v.assume_init() }
             }
         }

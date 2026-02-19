@@ -64,7 +64,7 @@ set -euo pipefail
 
 dnf install -y rustup
 rustup-init -y --no-modify-path --profile minimal --default-toolchain stable
-rustup component add rustfmt
+rustup component add rustfmt clippy
 EOF
 
 RUN --mount=type=cache,target=/var/cache/libdnf5 \

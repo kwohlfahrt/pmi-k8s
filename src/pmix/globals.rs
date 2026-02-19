@@ -1,12 +1,77 @@
-use std::{ffi, marker::PhantomData, slice, sync::RwLock};
-use thiserror::Error;
+use std::{ffi, marker::PhantomData, ops::Deref, slice, sync::RwLock};
 use tokio::sync::mpsc;
 
-use super::sys;
+use crate::pmix::{char_to_u8, u8_to_char};
 
-pub type ModexCallback = (sys::pmix_modex_cbfunc_t, *mut ffi::c_void);
-pub type CData = (*mut ffi::c_char, usize);
+use super::{slice_from_raw_parts, sys, value::PmixError};
 
+pub struct ModexCallback(sys::pmix_modex_cbfunc_t, *mut ffi::c_void);
+
+// SAFETY: A single-use callback + data.
+unsafe impl Send for ModexCallback {}
+
+impl ModexCallback {
+    pub fn call(self, status: sys::pmix_status_t, data: Vec<u8>) {
+        let Some(cbfunc) = self.0 else {
+            return;
+        };
+
+        let data = Box::new(data);
+        let char_data = u8_to_char(&data);
+
+        // SAFETY: `char_data` lives as long as `data`, which is freed by libpmix using `release_vec_u8`.
+        unsafe {
+            cbfunc(
+                status,
+                char_data.as_ptr(),
+                char_data.len(),
+                self.1,
+                Some(release_vec_u8),
+                Box::into_raw(data) as *mut ffi::c_void,
+            )
+        }
+    }
+}
+
+pub struct CData(*mut ffi::c_char, usize);
+
+// SAFETY: Just a bunch of (read-only) bytes.
+unsafe impl Send for CData {}
+
+// SAFETY: Just a bunch of (read-only) bytes.
+unsafe impl Sync for CData {}
+
+impl CData {
+    /// # Safety
+    ///
+    /// `ptr` must be allocated with `libc::malloc`, and point to `size` bytes.
+    /// We take ownership of `ptr` and `libc::free` it on drop.
+    pub unsafe fn from_raw_parts(ptr: *mut ffi::c_char, size: usize) -> Self {
+        Self(ptr, size)
+    }
+}
+
+impl Deref for CData {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: We own the data for our own lifetime. `slice_from_raw_parts`
+        // handles the NULL check for us, and there are no alignment
+        // requirements for `u8`.
+        let data = unsafe { slice_from_raw_parts(self.0, self.1) };
+        char_to_u8(data)
+    }
+}
+
+impl Drop for CData {
+    fn drop(&mut self) {
+        // SAFETY: We are responsible for free'ing the data passed to us. I
+        // assume this means libc::free.
+        unsafe { libc::free(self.0 as *mut ffi::c_void) }
+    }
+}
+
+#[allow(clippy::large_enum_variant, reason = "pmix_proc_t is large")]
 pub enum Event {
     Fence {
         procs: Vec<sys::pmix_proc_t>,
@@ -15,11 +80,9 @@ pub enum Event {
     },
     DirectModex {
         proc: sys::pmix_proc_t,
-        cb: (sys::pmix_modex_cbfunc_t, *mut ffi::c_void),
+        cb: ModexCallback,
     },
 }
-
-unsafe impl Send for Event {}
 
 pub enum State {
     Client,
@@ -28,14 +91,23 @@ pub enum State {
 
 pub static PMIX_STATE: RwLock<Option<State>> = RwLock::new(None);
 
-#[derive(Error, Debug)]
-#[error("PMIx was already initialized")]
-pub struct AlreadyInitialized();
+#[derive(thiserror::Error, Debug)]
+pub enum InitError {
+    #[error("PMIx operation returned error code {}", 0.0)]
+    PmixError(#[from] PmixError),
+    #[error("PMIx global state was already initialized")]
+    AlreadyInitialized,
+}
 
 pub struct Unsync(pub PhantomData<*const ()>);
+// SAFETY: This is a marker type, for `Send + !Sync`
 unsafe impl Send for Unsync {}
 
+/// # Safety
+///
+/// `cbdata` must be a pointer created from `Box<Vec<u8>>::into_raw()`
 pub unsafe extern "C" fn release_vec_u8(cbdata: *mut ffi::c_void) {
+    // SAFETY: The inverse of the creation of `cbdata`
     let data = unsafe { Box::from_raw(cbdata as *mut Vec<u8>) };
     drop(data)
 }
@@ -67,7 +139,8 @@ unsafe extern "C" fn fence_nb(
     cbfunc: sys::pmix_modex_cbfunc_t,
     cbdata: *mut std::ffi::c_void,
 ) -> sys::pmix_status_t {
-    let info = unsafe { std::slice::from_raw_parts(info, ninfo) };
+    // SAFETY: `info` is provided by `libpmix`, and is valid for this function.
+    let info = unsafe { slice_from_raw_parts(info, ninfo) };
     let ninfo_reqd = info
         .iter()
         .filter(|i| {
@@ -81,15 +154,20 @@ unsafe extern "C" fn fence_nb(
     if ninfo_reqd > 0 {
         return sys::PMIX_ERR_NOT_SUPPORTED;
     };
+    #[allow(clippy::unwrap_used, reason = "no asserts poison the global state")]
     let guard = PMIX_STATE.read().unwrap();
 
     if let Some(State::Server(ref s)) = *guard {
-        // At least one proc must be participating in the fence, so procs must be valid
+        // SAFETY: At least one proc must be participating in the fence, so procs must be valid
         let procs = unsafe { slice::from_raw_parts(procs, nprocs) }.into();
-        let cb = (cbfunc, cbdata);
-        let data = (data, ndata);
-        // mpsc::Sender only fails to send if the receiver is dropped. This only
-        // happens in Server::drop, which also clears PMIX_STATE state.
+        let cb = ModexCallback(cbfunc, cbdata);
+        // SAFETY: According to the standard, we (the host) are responsible for
+        // free'ing the data passed to `fence_nb`.
+        let data = unsafe { CData::from_raw_parts(data, ndata) };
+        // mpsc::UnboundedSender::send() only fails if the receiver is dropped,
+        // which only happens in Server::drop, which clears PMIX_STATE and calls
+        // PMIx_server_finalize (deactivating this callback).
+        #[allow(clippy::unwrap_used, reason = "Unreachable if receiver is dropped")]
         s.send(Event::Fence { procs, data, cb }).unwrap();
         sys::PMIX_SUCCESS as sys::pmix_status_t
     } else {
@@ -104,7 +182,8 @@ unsafe extern "C" fn direct_modex(
     cbfunc: sys::pmix_modex_cbfunc_t,
     cbdata: *mut std::ffi::c_void,
 ) -> sys::pmix_status_t {
-    let info = unsafe { std::slice::from_raw_parts(info, ninfo) };
+    // SAFETY: `info` is provided by `libpmix`, and is valid for this function.
+    let info = unsafe { slice_from_raw_parts(info, ninfo) };
     let ninfo_reqd = info
         .iter()
         .filter(|i| {
@@ -115,13 +194,17 @@ unsafe extern "C" fn direct_modex(
     if ninfo_reqd > 0 {
         return sys::PMIX_ERR_NOT_SUPPORTED;
     };
+    #[allow(clippy::unwrap_used, reason = "no asserts poison the global state")]
     let guard = PMIX_STATE.read().unwrap();
 
     if let Some(State::Server(ref s)) = *guard {
+        // SAFETY: `proc` is passed to us by libpmix, assume it is valid.
         let proc = unsafe { *proc };
-        let cb = (cbfunc, cbdata);
-        // mpsc::Sender only fails to send if the receiver is dropped. This only
-        // happens in Server::drop, which also clears PMIX_STATE state.
+        let cb = ModexCallback(cbfunc, cbdata);
+        // mpsc::UnboundedSender::send() only fails if the receiver is dropped,
+        // which only happens in Server::drop, which clears PMIX_STATE and calls
+        // PMIx_server_finalize (deactivating this callback).
+        #[allow(clippy::unwrap_used, reason = "Unreachable if receiver is dropped")]
         s.send(Event::DirectModex { proc, cb }).unwrap();
         sys::PMIX_SUCCESS as sys::pmix_status_t
     } else {

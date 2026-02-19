@@ -1,5 +1,4 @@
-// FIXME: This is only used in testing, make the dependency dev-only
-use futures::future::join_all;
+use futures::{TryStreamExt, stream::FuturesUnordered};
 use notify::{self, Watcher};
 use std::{
     cell::RefCell,
@@ -12,6 +11,16 @@ use std::{
 use tokio::sync::mpsc;
 
 use super::PeerDiscovery;
+
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error("unable to read or write peer information")]
+    Io(#[from] io::Error),
+    #[error("unable to watch for new peers")]
+    Notify(#[from] notify::Error),
+    #[error("unable to parse data")]
+    InvalidAddr(#[from] net::AddrParseError),
+}
 
 pub struct DirectoryPeers<'a> {
     dir: &'a Path,
@@ -28,22 +37,20 @@ impl<'a> DirectoryPeers<'a> {
         }
     }
 
-    fn read_peer(path: &Path) -> net::SocketAddr {
-        fs::read_to_string(path).unwrap().trim().parse().unwrap()
+    fn read_peer(path: &Path) -> Result<net::SocketAddr, Error> {
+        Ok(fs::read_to_string(path)?.parse()?)
     }
 
-    async fn wait_for_peer(&self, path: &Path) -> net::SocketAddr {
+    async fn wait_for_peer(&self, path: &Path) -> Result<net::SocketAddr, Error> {
         if path.exists() {
             // Fast path for if path already exists
             return Self::read_peer(path);
         }
 
         let (tx, mut rx) = mpsc::channel(1);
-        let mut watcher =
-            notify::recommended_watcher(move |res| tx.blocking_send(res).unwrap()).unwrap();
-        watcher
-            .watch(self.dir, notify::RecursiveMode::NonRecursive)
-            .unwrap();
+        #[allow(clippy::unwrap_used, reason = "watcher is dropped before the receiver")]
+        let mut watcher = notify::recommended_watcher(move |res| tx.blocking_send(res).unwrap())?;
+        watcher.watch(self.dir, notify::RecursiveMode::NonRecursive)?;
 
         if path.exists() {
             // Handle race condition between fast-path and setting up watch
@@ -51,16 +58,21 @@ impl<'a> DirectoryPeers<'a> {
         }
 
         loop {
-            let event = rx.recv().await.unwrap().unwrap();
-            if event.kind == notify::EventKind::Create(notify::event::CreateKind::File) {
-                if event.paths.iter().any(|p| p == path) {
-                    break Self::read_peer(path);
-                }
+            #[allow(
+                clippy::unwrap_used,
+                reason = "sender is not dropped until the last iteration"
+            )]
+            let event = rx.recv().await.unwrap()?;
+            if event.kind == notify::EventKind::Create(notify::event::CreateKind::File)
+                && event.paths.iter().any(|p| p == path)
+            {
+                drop(watcher);
+                break Self::read_peer(path);
             }
         }
     }
 
-    pub fn register(&self, addr: &net::SocketAddr) {
+    pub fn register(&self, addr: &net::SocketAddr) -> io::Result<()> {
         let (node_rank, mut f) = (0..self.nnodes)
             .map(|node_rank| {
                 (
@@ -77,24 +89,30 @@ impl<'a> DirectoryPeers<'a> {
             .expect("All nodes already registered")
             .expect("Error registering node");
 
-        f.write(addr.to_string().as_bytes()).unwrap();
+        f.write_all(addr.to_string().as_bytes())?;
         *self.node_rank.borrow_mut() = Some(node_rank);
+        Ok(())
     }
 }
 
 impl<'a> PeerDiscovery for DirectoryPeers<'a> {
-    async fn peer(&self, node_rank: u32) -> net::SocketAddr {
+    type Error = Error;
+
+    async fn peer(&self, node_rank: u32) -> Result<net::SocketAddr, Error> {
         let path = self.dir.join(format!("{}", node_rank));
         if path.exists() {
-            Self::read_peer(&path)
+            Ok(Self::read_peer(&path)?)
         } else {
-            self.wait_for_peer(&path).await
+            Ok(self.wait_for_peer(&path).await?)
         }
     }
 
-    async fn peers(&self) -> HashMap<u32, net::SocketAddr> {
-        let peers = (0..self.nnodes).map(async |node_rank| (node_rank, self.peer(node_rank).await));
-        join_all(peers).await.into_iter().collect()
+    async fn peers(&self) -> Result<HashMap<u32, net::SocketAddr>, Error> {
+        (0..self.nnodes)
+            .map(async |node_rank| self.peer(node_rank).await.map(|peer| (node_rank, peer)))
+            .collect::<FuturesUnordered<_>>()
+            .try_collect()
+            .await
     }
 
     fn local_ranks(&self, nprocs: u16) -> impl Iterator<Item = u32> {
@@ -104,12 +122,16 @@ impl<'a> PeerDiscovery for DirectoryPeers<'a> {
 
     fn hostnames(&self) -> impl Iterator<Item = std::ffi::CString> {
         // These hostnames don't actually resolve, but that doesn't seem to matter.
-        (0..self.nnodes).map(|rank| ffi::CString::new(format!("mpi-{}", rank)).unwrap())
+        (0..self.nnodes).map(|rank| {
+            #[allow(clippy::unwrap_used, reason = "Literal string without NULLs")]
+            ffi::CString::new(format!("mpi-{}", rank)).unwrap()
+        })
     }
 }
 
 #[cfg(test)]
 mod test {
+    #![allow(clippy::unwrap_used)]
     use std::collections::HashSet;
 
     use super::*;
@@ -126,12 +148,13 @@ mod test {
             .collect::<HashSet<_>>();
 
         for addr in &expected {
-            discovery.register(addr);
+            discovery.register(addr).unwrap();
         }
 
         let peers = discovery
             .peers()
             .await
+            .unwrap()
             .into_values()
             .collect::<HashSet<_>>();
         assert_eq!(peers, expected);

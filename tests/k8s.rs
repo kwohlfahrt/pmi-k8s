@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
+
 use std::{
     env,
     path::Path,
@@ -33,7 +35,7 @@ fn wait_for_complete(name: &str, timeout: Duration) -> ExitStatus {
     Command::new("kubectl")
         .args(["wait", "--for", "condition=Complete"])
         .arg(format!("--timeout={}s", timeout.as_secs()))
-        .arg(&format!("jobs.batch/{}", name))
+        .arg(format!("jobs.batch/{}", name))
         .status()
         .unwrap()
 }
