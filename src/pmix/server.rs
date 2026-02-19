@@ -58,8 +58,6 @@ impl<'a> Server<'a> {
         })
     }
 
-    // FIXME: We need a fairly large refactor to avoid this lint.
-    #[expect(clippy::await_holding_refcell_ref)]
     async fn handle_events<D: PeerDiscovery>(
         &self,
         fence: &fence::NetFence<'a, D>,
