@@ -66,7 +66,7 @@ pub(crate) async fn run(args: ServerArgs) -> Result<(), Error> {
     peers.register(&modex.addr()).unwrap();
 
     let server_dir = tmpdir.join("server");
-    let s = pmix::server::Server::init(&server_dir).unwrap();
+    let (s, mut e) = pmix::server::Server::init(&server_dir).unwrap();
 
     let hostnames = peers.hostnames().collect::<Vec<_>>();
     let hostnames = hostnames.iter().map(|h| h.as_c_str()).collect::<Vec<_>>();
@@ -87,7 +87,7 @@ pub(crate) async fn run(args: ServerArgs) -> Result<(), Error> {
             .map(|mut p| p.wait().unwrap())
             .collect::<Vec<_>>()
     });
-    let run = pin!(s.run(&fence, &modex));
+    let run = pin!(e.run(&fence, &modex));
     let Either::Left((rcs, _)) = select(rcs, run).await else {
         panic!("server stopped unexpectedly")
     };

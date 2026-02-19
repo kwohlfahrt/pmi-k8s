@@ -1,5 +1,4 @@
 use futures::future::select;
-use std::cell::RefCell;
 use std::convert::Infallible;
 use std::ffi;
 use std::marker::PhantomData;
@@ -17,8 +16,41 @@ use super::{
     value::{PmixError, PmixStatus, Rank},
 };
 
+pub struct ServerEvents<'a> {
+    rx: mpsc::UnboundedReceiver<globals::Event>,
+    _server: &'a PhantomData<Server<'a>>,
+}
+
+impl<'a> ServerEvents<'a> {
+    async fn handle_events<D: PeerDiscovery>(
+        &mut self,
+        fence: &fence::NetFence<'a, D>,
+        modex: &modex::NetModex<'a, D>,
+    ) -> Result<Infallible, ModexError<D::Error>> {
+        loop {
+            #[allow(
+                clippy::unwrap_used,
+                reason = "Sender is only dropped in Server::drop()"
+            )]
+            match self.rx.recv().await.unwrap() {
+                globals::Event::Fence { procs, data, cb } => fence.submit(&procs, data, cb).await?,
+                globals::Event::DirectModex { proc, cb } => modex.request(proc, cb).await?,
+            }
+        }
+    }
+
+    pub async fn run<D: PeerDiscovery>(
+        &mut self,
+        fence: &fence::NetFence<'a, D>,
+        modex: &modex::NetModex<'a, D>,
+    ) -> Result<Infallible, ModexError<D::Error>> {
+        let events = pin!(self.handle_events(fence, modex));
+        let modex = pin!(modex.serve());
+        select(events, modex).await.factor_first().0
+    }
+}
+
 pub struct Server<'a> {
-    rx: RefCell<mpsc::UnboundedReceiver<globals::Event>>,
     _dir: &'a PhantomData<Path>,
     // I'm not sure what PMIx functions are thread-safe, so mark the server as
     // !Sync. Server::init enforces that only one is live at a time.
@@ -26,7 +58,7 @@ pub struct Server<'a> {
 }
 
 impl<'a> Server<'a> {
-    pub fn init(dirname: &'a Path) -> Result<Self, globals::InitError> {
+    pub fn init(dirname: &'a Path) -> Result<(Self, ServerEvents<'a>), globals::InitError> {
         #[allow(clippy::unwrap_used, reason = "File paths cannot contain NULL bytes")]
         let dirname = ffi::CString::new(dirname.as_os_str().as_encoded_bytes()).unwrap();
         let infos: [sys::pmix_info_t; _] = [
@@ -51,39 +83,16 @@ impl<'a> Server<'a> {
         })
         .check()?;
 
-        Ok(Self {
-            rx: RefCell::new(rx),
-            _dir: &PhantomData,
-            _marker: globals::Unsync(PhantomData),
-        })
-    }
-
-    async fn handle_events<D: PeerDiscovery>(
-        &self,
-        fence: &fence::NetFence<'a, D>,
-        modex: &modex::NetModex<'a, D>,
-    ) -> Result<Infallible, ModexError<D::Error>> {
-        let mut rx = self.rx.borrow_mut();
-        loop {
-            #[allow(
-                clippy::unwrap_used,
-                reason = "Sender is only dropped in Server::drop()"
-            )]
-            match rx.recv().await.unwrap() {
-                globals::Event::Fence { procs, data, cb } => fence.submit(&procs, data, cb).await?,
-                globals::Event::DirectModex { proc, cb } => modex.request(proc, cb).await?,
-            }
-        }
-    }
-
-    pub async fn run<D: PeerDiscovery>(
-        &self,
-        fence: &fence::NetFence<'a, D>,
-        modex: &modex::NetModex<'a, D>,
-    ) -> Result<Infallible, ModexError<D::Error>> {
-        let events = pin!(self.handle_events(fence, modex));
-        let modex = pin!(modex.serve());
-        select(events, modex).await.factor_first().0
+        Ok((
+            Self {
+                _dir: &PhantomData,
+                _marker: globals::Unsync(PhantomData),
+            },
+            ServerEvents {
+                rx,
+                _server: &PhantomData,
+            },
+        ))
     }
 }
 
