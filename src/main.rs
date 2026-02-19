@@ -33,14 +33,14 @@ async fn main() -> Result<(), Error> {
     let hostname_refs = hostnames.iter().map(|h| h.as_c_str()).collect::<Vec<_>>();
 
     let tempdir = TempDir::new("pmi-k8s")?;
-    let s = pmix::server::Server::init(fence, modex, tempdir.path())?;
+    let s = pmix::server::Server::init(tempdir.path())?;
     let ns = pmix::server::Namespace::register(&s, namespace, &hostname_refs, args.nproc)?;
     let clients = peers
         .local_ranks(args.nproc)
         .map(|i| pmix::server::Client::register(&ns, i))
         .collect::<Result<Vec<_>, _>>()?;
 
-    let run = pin!(s.run());
+    let run = pin!(s.run(&fence, &modex));
     let rcs = clients
         .iter()
         .map(async |c| -> Result<_, Error> {

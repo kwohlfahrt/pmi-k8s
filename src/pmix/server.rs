@@ -9,28 +9,24 @@ use std::ptr;
 use tokio::sync::mpsc;
 
 use crate::ModexError;
+use crate::peer::PeerDiscovery;
 
-use super::super::{fence, modex, peer};
+use super::super::{fence, modex};
 use super::{
     env, globals, sys, u8_to_char,
     value::{PmixError, PmixStatus, Rank},
 };
 
-pub struct Server<'a, D: peer::PeerDiscovery> {
-    fence: fence::NetFence<'a, D>,
-    modex: modex::NetModex<'a, D>,
+pub struct Server<'a> {
     rx: RefCell<mpsc::UnboundedReceiver<globals::Event>>,
+    _dir: &'a PhantomData<Path>,
     // I'm not sure what PMIx functions are thread-safe, so mark the server as
     // !Sync. Server::init enforces that only one is live at a time.
     _marker: globals::Unsync,
 }
 
-impl<'a, D: peer::PeerDiscovery> Server<'a, D> {
-    pub fn init(
-        fence: fence::NetFence<'a, D>,
-        modex: modex::NetModex<'a, D>,
-        dirname: &'a Path,
-    ) -> Result<Self, globals::InitError> {
+impl<'a> Server<'a> {
+    pub fn init(dirname: &'a Path) -> Result<Self, globals::InitError> {
         #[allow(clippy::unwrap_used, reason = "File paths cannot contain NULL bytes")]
         let dirname = ffi::CString::new(dirname.as_os_str().as_encoded_bytes()).unwrap();
         let infos: [sys::pmix_info_t; _] = [
@@ -56,16 +52,19 @@ impl<'a, D: peer::PeerDiscovery> Server<'a, D> {
         .check()?;
 
         Ok(Self {
-            fence,
-            modex,
             rx: RefCell::new(rx),
+            _dir: &PhantomData,
             _marker: globals::Unsync(PhantomData),
         })
     }
 
     // FIXME: We need a fairly large refactor to avoid this lint.
     #[expect(clippy::await_holding_refcell_ref)]
-    async fn handle_events(&self) -> Result<Infallible, ModexError<D::Error>> {
+    async fn handle_events<D: PeerDiscovery>(
+        &self,
+        fence: &fence::NetFence<'a, D>,
+        modex: &modex::NetModex<'a, D>,
+    ) -> Result<Infallible, ModexError<D::Error>> {
         let mut rx = self.rx.borrow_mut();
         loop {
             #[allow(
@@ -73,22 +72,24 @@ impl<'a, D: peer::PeerDiscovery> Server<'a, D> {
                 reason = "Sender is only dropped in Server::drop()"
             )]
             match rx.recv().await.unwrap() {
-                globals::Event::Fence { procs, data, cb } => {
-                    self.fence.submit(&procs, data, cb).await?
-                }
-                globals::Event::DirectModex { proc, cb } => self.modex.request(proc, cb).await?,
+                globals::Event::Fence { procs, data, cb } => fence.submit(&procs, data, cb).await?,
+                globals::Event::DirectModex { proc, cb } => modex.request(proc, cb).await?,
             }
         }
     }
 
-    pub async fn run(&self) -> Result<Infallible, ModexError<D::Error>> {
-        let events = pin!(self.handle_events());
-        let modex = pin!(self.modex.serve());
+    pub async fn run<D: PeerDiscovery>(
+        &self,
+        fence: &fence::NetFence<'a, D>,
+        modex: &modex::NetModex<'a, D>,
+    ) -> Result<Infallible, ModexError<D::Error>> {
+        let events = pin!(self.handle_events(fence, modex));
+        let modex = pin!(modex.serve());
         select(events, modex).await.factor_first().0
     }
 }
 
-impl<'a, D: peer::PeerDiscovery> Drop for Server<'a, D> {
+impl<'a> Drop for Server<'a> {
     fn drop(&mut self) {
         // SAFETY: We call server finalize before dropping the global state, to
         // ensure libpmix does not call the global functions without the
@@ -103,15 +104,15 @@ impl<'a, D: peer::PeerDiscovery> Drop for Server<'a, D> {
     }
 }
 
-pub struct Namespace<'a, D: peer::PeerDiscovery> {
+pub struct Namespace<'a> {
     nspace: sys::pmix_nspace_t,
-    server: PhantomData<&'a Server<'a, D>>,
+    server: PhantomData<&'a Server<'a>>,
 }
 
-impl<'a, D: peer::PeerDiscovery> Namespace<'a, D> {
+impl<'a> Namespace<'a> {
     // TODO: This should be a method on Server
     pub fn register(
-        _server: &'a Server<D>,
+        _server: &'a Server,
         namespace: &ffi::CStr,
         hostnames: &[&ffi::CStr],
         nlocalprocs: u16,
@@ -172,7 +173,7 @@ impl<'a, D: peer::PeerDiscovery> Namespace<'a, D> {
     }
 }
 
-impl<'a, D: peer::PeerDiscovery> Drop for Namespace<'a, D> {
+impl<'a> Drop for Namespace<'a> {
     fn drop(&mut self) {
         // SAFETY: We must have called `PMIx_server_register_nspace` to acquire
         // the namespace object being dropped.
@@ -182,13 +183,13 @@ impl<'a, D: peer::PeerDiscovery> Drop for Namespace<'a, D> {
     }
 }
 
-pub struct Client<'a, D: peer::PeerDiscovery> {
+pub struct Client<'a> {
     proc: sys::pmix_proc_t,
-    namespace: PhantomData<&'a Namespace<'a, D>>,
+    namespace: PhantomData<&'a Namespace<'a>>,
 }
 
-impl<'a, D: peer::PeerDiscovery> Client<'a, D> {
-    pub fn register(namespace: &'a Namespace<D>, rank: u32) -> Result<Self, PmixError> {
+impl<'a> Client<'a> {
+    pub fn register(namespace: &'a Namespace, rank: u32) -> Result<Self, PmixError> {
         let uid = nix::unistd::geteuid();
         let gid = nix::unistd::getegid();
 
@@ -227,7 +228,7 @@ impl<'a, D: peer::PeerDiscovery> Client<'a, D> {
     }
 }
 
-impl<'a, D: peer::PeerDiscovery> Drop for Client<'a, D> {
+impl<'a> Drop for Client<'a> {
     fn drop(&mut self) {
         // SAFETY: We must have called `PMIx_server_register_client` to acquire
         // the client object being dropped.
@@ -240,12 +241,9 @@ impl<'a, D: peer::PeerDiscovery> Drop for Client<'a, D> {
 #[cfg(test)]
 mod test {
     #![allow(clippy::unwrap_used)]
-    use std::net;
-
     use serial_test::serial;
     use tempdir::TempDir;
 
-    use super::super::super::peer::DirectoryPeers;
     use super::super::is_initialized;
     use super::*;
 
@@ -254,24 +252,8 @@ mod test {
     async fn test_server_init() {
         assert!(!is_initialized());
         {
-            let tempdir = TempDir::new("peers").unwrap();
-            let discovery = DirectoryPeers::new(tempdir.path(), 1);
-            let fence = fence::NetFence::new(
-                net::SocketAddr::new(net::Ipv4Addr::LOCALHOST.into(), 0),
-                &discovery,
-            )
-            .await
-            .unwrap();
-            let modex = modex::NetModex::new(
-                net::SocketAddr::new(net::Ipv4Addr::LOCALHOST.into(), 0),
-                &discovery,
-                1,
-            )
-            .await
-            .unwrap();
-
             let tempdir = TempDir::new("server").unwrap();
-            let _s = Server::init(fence, modex, tempdir.path()).unwrap();
+            let _s = Server::init(tempdir.path()).unwrap();
             assert!(is_initialized());
         }
         assert!(!is_initialized());
