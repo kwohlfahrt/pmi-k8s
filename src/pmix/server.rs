@@ -52,9 +52,6 @@ impl<'a> ServerEvents<'a> {
 
 pub struct Server<'a> {
     _dir: &'a PhantomData<Path>,
-    // I'm not sure what PMIx functions are thread-safe, so mark the server as
-    // !Sync. Server::init enforces that only one is live at a time.
-    _marker: globals::Unsync,
 }
 
 impl<'a> Server<'a> {
@@ -84,10 +81,7 @@ impl<'a> Server<'a> {
         .check()?;
 
         Ok((
-            Self {
-                _dir: &PhantomData,
-                _marker: globals::Unsync(PhantomData),
-            },
+            Self { _dir: &PhantomData },
             ServerEvents {
                 rx,
                 _server: &PhantomData,
