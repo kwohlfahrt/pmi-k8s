@@ -12,7 +12,7 @@ use crate::ModexError;
 
 use super::super::{fence, modex, peer};
 use super::{
-    u8_to_char, env, globals, sys,
+    env, globals, sys, u8_to_char,
     value::{PmixError, PmixStatus, Rank},
 };
 
@@ -63,13 +63,16 @@ impl<'a, D: peer::PeerDiscovery> Server<'a, D> {
         })
     }
 
+    // FIXME: We need a fairly large refactor to avoid this lint.
+    #[expect(clippy::await_holding_refcell_ref)]
     async fn handle_events(&self) -> Result<Infallible, ModexError<D::Error>> {
+        let mut rx = self.rx.borrow_mut();
         loop {
             #[allow(
                 clippy::unwrap_used,
                 reason = "Sender is only dropped in Server::drop()"
             )]
-            match self.rx.borrow_mut().recv().await.unwrap() {
+            match rx.recv().await.unwrap() {
                 globals::Event::Fence { procs, data, cb } => {
                     self.fence.submit(&procs, data, cb).await?
                 }
