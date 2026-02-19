@@ -1,4 +1,3 @@
-use std::marker::PhantomData;
 use std::{ffi::CStr, mem::MaybeUninit, ptr};
 
 use super::globals;
@@ -7,9 +6,6 @@ use super::value::{PmixError, PmixStatus};
 
 pub struct Client {
     proc: sys::pmix_proc_t,
-    // I'm not sure what PMIx functions are thread-safe, so mark the client as
-    // !Sync. Client::init enforces that only one is live at a time.
-    _marker: globals::Unsync,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -45,10 +41,7 @@ impl Client {
         let proc = unsafe { proc.assume_init() };
         *guard = Some(globals::State::Client);
 
-        Ok(Self {
-            proc,
-            _marker: globals::Unsync(PhantomData),
-        })
+        Ok(Self { proc })
     }
 
     pub fn rank(&self) -> u32 {

@@ -1,4 +1,4 @@
-use std::{ffi, marker::PhantomData, ops::Deref, slice, sync::RwLock};
+use std::{ffi, ops::Deref, slice, sync::RwLock};
 use tokio::sync::mpsc;
 
 use crate::pmix::{char_to_u8, u8_to_char};
@@ -98,10 +98,6 @@ pub enum InitError {
     #[error("PMIx global state was already initialized")]
     AlreadyInitialized,
 }
-
-pub struct Unsync(pub PhantomData<*const ()>);
-// SAFETY: This is a marker type, for `Send + !Sync`
-unsafe impl Send for Unsync {}
 
 /// # Safety
 ///
