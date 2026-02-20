@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -15,14 +16,20 @@ use crate::pmix::{globals, sys};
 pub struct NetFence<'a, D: PeerDiscovery> {
     listener: net::TcpListener,
     discovery: &'a D,
+    nprocs: u16,
 }
 
 impl<'a, D: PeerDiscovery> NetFence<'a, D> {
-    pub async fn new(addr: SocketAddr, discovery: &'a D) -> Result<Self, ModexError<D::Error>> {
+    pub async fn new(
+        addr: SocketAddr,
+        nprocs: u16,
+        discovery: &'a D,
+    ) -> Result<Self, ModexError<D::Error>> {
         let listener: net::TcpListener = net::TcpListener::bind(addr).await?;
         Ok(Self {
             listener,
             discovery,
+            nprocs,
         })
     }
 
@@ -61,12 +68,30 @@ impl<'a, D: PeerDiscovery> NetFence<'a, D> {
         procs: &[sys::pmix_proc_t],
         data: &[u8],
     ) -> Result<Vec<u8>, ModexError<D::Error>> {
-        // TODO: Handle other fence scopes
-        assert_eq!(procs.len(), 1);
-        assert_eq!(procs[0].rank, sys::PMIX_RANK_WILDCARD);
+        // TODO: Handle other namespaces
+        let peers = if procs.len() == 1 && procs[0].rank == sys::PMIX_RANK_WILDCARD {
+            self.discovery.peers().await
+        } else {
+            let node_ranks = procs
+                .iter()
+                .map(|proc| proc.rank / self.nprocs as u32)
+                .collect::<HashSet<_>>();
+
+            node_ranks
+                .into_iter()
+                .map(async |node_rank| {
+                    self.discovery
+                        .peer(node_rank)
+                        .await
+                        .map(|addr| (node_rank, addr))
+                })
+                .collect::<FuturesUnordered<_>>()
+                .try_collect::<HashMap<_, _>>()
+                .await
+        }
+        .map_err(ModexError::Peer)?;
 
         // TODO: exclude ourselves from send + recv
-        let peers = self.discovery.peers().await.map_err(ModexError::Peer)?;
         let sends = peers
             .values()
             .map(|addr| Self::send(addr, data))
@@ -100,19 +125,28 @@ mod test {
     use futures::future::join_all;
     use tempdir::TempDir;
 
-    #[tokio::test]
-    async fn test_fence() {
-        let n = 4;
-        let tmpdir = TempDir::new("fence-test").unwrap();
-        let discovery = DirectoryPeers::new(tmpdir.path(), n);
-        let fences = join_all((0..n).map(async |_| {
+    async fn create_fences<'a>(
+        nnodes: u32,
+        discovery: &'a DirectoryPeers<'a>,
+    ) -> Vec<NetFence<'a, DirectoryPeers<'a>>> {
+        let fences = join_all((0..nnodes).map(async |_| {
             let addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0);
-            NetFence::new(addr, &discovery).await.unwrap()
+            NetFence::new(addr, 1, discovery).await.unwrap()
         }))
         .await;
         for f in fences.iter() {
             discovery.register(&f.addr()).unwrap();
         }
+        fences
+    }
+
+    #[tokio::test]
+    async fn test_global_fence() {
+        let nnodes = 4;
+        let tmpdir = TempDir::new("fence-test").unwrap();
+        let discovery = DirectoryPeers::new(tmpdir.path(), nnodes);
+        let fences = create_fences(nnodes, &discovery).await;
+
         let procs = [sys::pmix_proc_t {
             nspace: [0; _],
             rank: sys::PMIX_RANK_WILDCARD,
@@ -122,10 +156,75 @@ mod test {
             f.submit_data(&procs, &data).await.unwrap()
         }));
 
-        let expected = (0..n as u8).collect::<HashSet<_>>();
+        let expected = (0..nnodes as u8).collect::<HashSet<_>>();
         for result in results.await {
             let result = result.into_iter().collect::<HashSet<_>>();
             assert_eq!(result, expected)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_partial_fence() {
+        let nnodes = 4;
+        let tmpdir = TempDir::new("fence-test").unwrap();
+        let discovery = DirectoryPeers::new(tmpdir.path(), nnodes);
+        let fences = create_fences(nnodes, &discovery).await;
+
+        let n_fence = 3;
+        let procs = (0..n_fence)
+            .map(|rank| sys::pmix_proc_t {
+                nspace: [0; _],
+                rank,
+            })
+            .collect::<Vec<_>>();
+
+        let results = join_all(procs.iter().map(async |proc| {
+            let data = [proc.rank as u8];
+            let fence = &fences[proc.rank as usize];
+            fence.submit_data(&procs, &data).await.unwrap()
+        }));
+
+        let expected = (0..n_fence as u8).collect::<HashSet<_>>();
+        for result in results.await {
+            let result = result.into_iter().collect::<HashSet<_>>();
+            assert_eq!(result, expected)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_overlapping_fence() {
+        let nnodes = 4;
+        let tmpdir = TempDir::new("fence-test").unwrap();
+        let discovery = DirectoryPeers::new(tmpdir.path(), nnodes);
+        let fences = create_fences(nnodes, &discovery).await;
+
+        let fence_rankss = [(0..3), (1..4)];
+        let procss = fence_rankss.iter().map(|ranks| {
+            ranks
+                .clone()
+                .map(|rank| sys::pmix_proc_t {
+                    nspace: [0; _],
+                    rank,
+                })
+                .collect::<Vec<_>>()
+        });
+
+        let resultss = procss.into_iter().map(async |procs| {
+            join_all(procs.iter().map(async |proc| {
+                let data = [proc.rank as u8];
+                let fence = &fences[proc.rank as usize];
+                fence.submit_data(&procs, &data).await.unwrap()
+            }))
+            .await
+        });
+        let resultss = join_all(resultss);
+
+        let expecteds = fence_rankss.map(|ranks| ranks.map(|r| r as u8).collect::<HashSet<_>>());
+        for (results, expected) in resultss.await.into_iter().zip(expecteds) {
+            for result in results {
+                let result = result.into_iter().collect::<HashSet<_>>();
+                assert_eq!(result, expected)
+            }
         }
     }
 }
