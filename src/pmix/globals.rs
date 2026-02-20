@@ -1,3 +1,6 @@
+#[cfg(test)]
+use std::ptr;
+
 use std::{ffi, ops::Deref, slice, sync::RwLock};
 use tokio::sync::mpsc;
 
@@ -31,6 +34,33 @@ impl ModexCallback {
             )
         }
     }
+
+    #[cfg(test)]
+    #[allow(clippy::type_complexity)]
+    pub fn test_callback(cb: Box<dyn FnOnce(&[u8])>) -> Self {
+        let cb = Box::new(cb);
+        Self(Some(test_cbfunc), Box::into_raw(cb) as *mut ffi::c_void)
+    }
+}
+
+#[cfg(test)]
+unsafe extern "C" fn test_cbfunc(
+    _status: sys::pmix_status_t,
+    data: *const ffi::c_char,
+    ndata: usize,
+    cbdata: *mut ffi::c_void,
+    release_fn: sys::pmix_release_cbfunc_t,
+    release_cbdata: *mut ffi::c_void,
+) {
+    // SAFETY: Passed in from modex functions
+    let data = unsafe { slice_from_raw_parts(data, ndata) };
+    // SAFETY: Constructed in ModexCallback::test_callback
+    let cb = unsafe { Box::from_raw(cbdata as *mut Box<dyn FnOnce(&[u8])>) };
+    cb(char_to_u8(data));
+    if let Some(release_fn) = release_fn {
+        // SAFETY: Passed in from modex functions
+        unsafe { release_fn(release_cbdata) }
+    }
 }
 
 pub struct CData(*mut ffi::c_char, usize);
@@ -48,6 +78,18 @@ impl CData {
     /// We take ownership of `ptr` and `libc::free` it on drop.
     pub unsafe fn from_raw_parts(ptr: *mut ffi::c_char, size: usize) -> Self {
         Self(ptr, size)
+    }
+
+    #[cfg(test)]
+    pub fn from_slice(bytes: &[u8]) -> Option<Self> {
+        let len = bytes.len();
+        let ptr = unsafe { libc::malloc(len) as *mut u8 };
+        if ptr.is_null() {
+            None
+        } else {
+            unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, len) };
+            Some(Self(ptr as *mut ffi::c_char, len))
+        }
     }
 }
 
@@ -71,22 +113,23 @@ impl Drop for CData {
     }
 }
 
-#[allow(clippy::large_enum_variant, reason = "pmix_proc_t is large")]
-pub enum Event {
-    Fence {
-        procs: Vec<sys::pmix_proc_t>,
-        data: CData,
-        cb: ModexCallback,
-    },
-    DirectModex {
-        proc: sys::pmix_proc_t,
-        cb: ModexCallback,
-    },
+pub struct FenceEvent {
+    pub procs: Vec<sys::pmix_proc_t>,
+    pub data: CData,
+    pub cb: ModexCallback,
+}
+
+pub struct DirectModexEvent {
+    pub proc: sys::pmix_proc_t,
+    pub cb: ModexCallback,
 }
 
 pub enum State {
     Client,
-    Server(mpsc::UnboundedSender<Event>),
+    Server {
+        fence_tx: mpsc::UnboundedSender<FenceEvent>,
+        modex_tx: mpsc::UnboundedSender<DirectModexEvent>,
+    },
 }
 
 pub static PMIX_STATE: RwLock<Option<State>> = RwLock::new(None);
@@ -153,7 +196,7 @@ unsafe extern "C" fn fence_nb(
     #[allow(clippy::unwrap_used, reason = "no asserts poison the global state")]
     let guard = PMIX_STATE.read().unwrap();
 
-    if let Some(State::Server(ref s)) = *guard {
+    if let Some(State::Server { ref fence_tx, .. }) = *guard {
         // SAFETY: At least one proc must be participating in the fence, so procs must be valid
         let procs = unsafe { slice::from_raw_parts(procs, nprocs) }.into();
         let cb = ModexCallback(cbfunc, cbdata);
@@ -164,7 +207,7 @@ unsafe extern "C" fn fence_nb(
         // which only happens in Server::drop, which clears PMIX_STATE and calls
         // PMIx_server_finalize (deactivating this callback).
         #[allow(clippy::unwrap_used, reason = "Unreachable if receiver is dropped")]
-        s.send(Event::Fence { procs, data, cb }).unwrap();
+        fence_tx.send(FenceEvent { procs, data, cb }).unwrap();
         sys::PMIX_SUCCESS as sys::pmix_status_t
     } else {
         sys::PMIX_ERR_INIT as sys::pmix_status_t
@@ -193,7 +236,7 @@ unsafe extern "C" fn direct_modex(
     #[allow(clippy::unwrap_used, reason = "no asserts poison the global state")]
     let guard = PMIX_STATE.read().unwrap();
 
-    if let Some(State::Server(ref s)) = *guard {
+    if let Some(State::Server { ref modex_tx, .. }) = *guard {
         // SAFETY: `proc` is passed to us by libpmix, assume it is valid.
         let proc = unsafe { *proc };
         let cb = ModexCallback(cbfunc, cbdata);
@@ -201,7 +244,7 @@ unsafe extern "C" fn direct_modex(
         // which only happens in Server::drop, which clears PMIX_STATE and calls
         // PMIx_server_finalize (deactivating this callback).
         #[allow(clippy::unwrap_used, reason = "Unreachable if receiver is dropped")]
-        s.send(Event::DirectModex { proc, cb }).unwrap();
+        modex_tx.send(DirectModexEvent { proc, cb }).unwrap();
         sys::PMIX_SUCCESS as sys::pmix_status_t
     } else {
         sys::PMIX_ERR_INIT as sys::pmix_status_t

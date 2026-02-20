@@ -1,18 +1,23 @@
-use core::ffi;
-use std::{convert::Infallible, io, mem, net::SocketAddr, time::Duration};
+use std::ffi;
+use std::{mem, net::SocketAddr};
 
+use futures::{StreamExt, TryStreamExt, future::join};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net,
-    sync::oneshot,
-    time,
+    sync::{mpsc, oneshot},
 };
+use tokio_stream::wrappers::{TcpListenerStream, UnboundedReceiverStream};
 
 use crate::net::connect_peer;
 use crate::{
     ModexError,
     peer::{Endpoint, PeerDiscovery},
-    pmix::{char_to_u8, globals, slice_from_raw_parts, sys, u8_to_char},
+    pmix::{
+        char_to_u8,
+        globals::{self, DirectModexEvent},
+        slice_from_raw_parts, sys, u8_to_char,
+    },
 };
 
 unsafe extern "C" fn response(
@@ -85,10 +90,12 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
         sys::pmix_proc_t { rank, nspace }
     }
 
-    async fn request_data(&self, proc: sys::pmix_proc_t) -> Result<Vec<u8>, ModexError<D::Error>> {
+    async fn request_data(
+        discovery: &'a D,
+        proc: sys::pmix_proc_t,
+    ) -> Result<Vec<u8>, ModexError<D::Error>> {
         let req = Self::serialize_proc(proc);
-        let addr = self
-            .discovery
+        let addr = discovery
             .peer(&proc, Endpoint::Modex)
             .await
             .map_err(ModexError::Peer)?;
@@ -100,17 +107,10 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
         Ok(data)
     }
 
-    pub async fn request(
-        &self,
-        proc: sys::pmix_proc_t,
-        callback: globals::ModexCallback,
+    async fn respond(
+        mut c: net::TcpStream,
+        request_fn: RequestFn,
     ) -> Result<(), ModexError<D::Error>> {
-        let data = self.request_data(proc).await?;
-        callback.call(sys::PMIX_SUCCESS as sys::pmix_status_t, data);
-        Ok(())
-    }
-
-    async fn respond(&self, mut c: net::TcpStream) -> Result<(), ModexError<D::Error>> {
         let mut buf = [0; _];
         c.read_exact(&mut buf).await?;
         let (tx, rx) = oneshot::channel::<Vec<u8>>();
@@ -119,9 +119,8 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
 
         // SAFETY: `request_fn` is PMIx_server_dmodex_request outside of tests.
         // `response` unwraps `cbdata` into oneshot::Sender<Vec<u8>>.
-        let status = unsafe {
-            (self.request_fn)(&proc, Some(response), Box::into_raw(tx) as *mut ffi::c_void)
-        };
+        let status =
+            unsafe { (request_fn)(&proc, Some(response), Box::into_raw(tx) as *mut ffi::c_void) };
         assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
 
         let data = rx.await.expect("PMIx did not return modex response");
@@ -129,12 +128,23 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
         Ok(())
     }
 
-    pub async fn serve(&self) -> Result<Infallible, ModexError<D::Error>> {
-        loop {
-            // TODO: Process incoming requests in parallel
-            let (c, _) = self.listener.accept().await?;
-            self.respond(c).await?
-        }
+    pub async fn serve(
+        self,
+        events: mpsc::UnboundedReceiver<globals::DirectModexEvent>,
+    ) -> Result<(), ModexError<D::Error>> {
+        let requests = UnboundedReceiverStream::new(events).map(Ok).try_for_each(
+            async |DirectModexEvent { proc, cb }| {
+                let data = Self::request_data(self.discovery, proc).await?;
+                cb.call(sys::PMIX_SUCCESS as sys::pmix_status_t, data);
+                Ok(())
+            },
+        );
+        let responses = TcpListenerStream::new(self.listener)
+            .map_err(ModexError::from)
+            .try_for_each(async |c| Self::respond(c, self.request_fn).await);
+
+        let (requests, responses) = join(requests, responses).await;
+        requests.and(responses)
     }
 }
 
@@ -170,21 +180,31 @@ mod test {
         let tmpdir = TempDir::new("modex-test").unwrap();
         let discovery = DirectoryPeers::new(tmpdir.path(), nproc, 2);
         let addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0);
-        let sender = NetModex::new(addr, &discovery).await.unwrap();
+        let requester = NetModex::new(addr, &discovery).await.unwrap();
         let responder = NetModex::with_request_fn(addr, &discovery, request_fn)
             .await
             .unwrap();
-        discovery.register(&sender.addr()).unwrap();
+        discovery.register(&requester.addr()).unwrap();
         discovery.register(&responder.addr()).unwrap();
 
         let proc = sys::pmix_proc_t {
             nspace: [0; _],
             rank: nproc as u32,
         };
-        let req = pin!(sender.request_data(proc));
-        let serve = pin!(responder.serve());
-        let resp = select(req, serve).await;
-        let Either::Left((Ok(data), _)) = resp else {
+
+        let (result_tx, result_rx) = oneshot::channel();
+        let cb = globals::ModexCallback::test_callback(Box::new(move |data| {
+            result_tx.send(Vec::from(data)).unwrap()
+        }));
+
+        let requester = {
+            let (tx, rx) = mpsc::unbounded_channel();
+            tx.send(globals::DirectModexEvent { proc, cb }).unwrap();
+            pin!(requester.serve(rx))
+        };
+        let responder = pin!(responder.serve(mpsc::unbounded_channel().1));
+        let Either::Left((Ok(data), _)) = select(result_rx, join(requester, responder)).await
+        else {
             panic!("expected response");
         };
         assert_eq!(data, vec![1, 2, 3]);

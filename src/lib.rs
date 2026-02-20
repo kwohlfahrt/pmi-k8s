@@ -6,6 +6,7 @@ pub mod fence;
 pub mod modex;
 pub mod peer;
 pub mod pmix;
+pub mod net;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ModexError<E: Error + fmt::Debug> {

@@ -1,5 +1,4 @@
 use futures::future::select;
-use std::convert::Infallible;
 use std::ffi;
 use std::marker::PhantomData;
 use std::path::Path;
@@ -17,36 +16,20 @@ use super::{
 };
 
 pub struct ServerEvents<'a> {
-    rx: mpsc::UnboundedReceiver<globals::Event>,
+    fence_rx: mpsc::UnboundedReceiver<globals::FenceEvent>,
+    modex_rx: mpsc::UnboundedReceiver<globals::DirectModexEvent>,
     _server: &'a PhantomData<Server<'a>>,
 }
 
 impl<'a> ServerEvents<'a> {
-    async fn handle_events<D: PeerDiscovery>(
-        &mut self,
-        fence: &fence::NetFence<'a, D>,
-        modex: &modex::NetModex<'a, D>,
-    ) -> Result<Infallible, ModexError<D::Error>> {
-        loop {
-            #[allow(
-                clippy::unwrap_used,
-                reason = "Sender is only dropped in Server::drop()"
-            )]
-            match self.rx.recv().await.unwrap() {
-                globals::Event::Fence { procs, data, cb } => fence.submit(&procs, data, cb).await?,
-                globals::Event::DirectModex { proc, cb } => modex.request(proc, cb).await?,
-            }
-        }
-    }
-
     pub async fn run<D: PeerDiscovery>(
-        &mut self,
-        fence: &fence::NetFence<'a, D>,
-        modex: &modex::NetModex<'a, D>,
-    ) -> Result<Infallible, ModexError<D::Error>> {
-        let events = pin!(self.handle_events(fence, modex));
-        let modex = pin!(modex.serve());
-        select(events, modex).await.factor_first().0
+        self,
+        fence: fence::NetFence<'a, D>,
+        modex: modex::NetModex<'a, D>,
+    ) -> Result<(), ModexError<D::Error>> {
+        let fence = pin!(fence.serve(self.fence_rx));
+        let modex = pin!(modex.serve(self.modex_rx));
+        select(fence, modex).await.factor_first().0
     }
 }
 
@@ -71,8 +54,9 @@ impl<'a> Server<'a> {
         if guard.is_some() {
             Err(globals::InitError::AlreadyInitialized)?;
         }
-        let (tx, rx) = mpsc::unbounded_channel();
-        *guard = Some(globals::State::Server(tx));
+        let (fence_tx, fence_rx) = mpsc::unbounded_channel();
+        let (modex_tx, modex_rx) = mpsc::unbounded_channel();
+        *guard = Some(globals::State::Server { fence_tx, modex_tx });
         // SAFETY: global state accessed by the function pointers in `module` is
         // populated. `infos` is a pointer to an info array of length `ninfo`.
         PmixStatus(unsafe {
@@ -83,7 +67,8 @@ impl<'a> Server<'a> {
         Ok((
             Self { _dir: &PhantomData },
             ServerEvents {
-                rx,
+                fence_rx,
+                modex_rx,
                 _server: &PhantomData,
             },
         ))
