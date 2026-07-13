@@ -5,6 +5,8 @@ use k8s_openapi::api::{batch::v1::Job, core::v1::Pod};
 use kube::{self, Api, Client, Config, runtime::watcher};
 use thiserror::Error;
 
+use crate::peer::Endpoint;
+
 use super::PeerDiscovery;
 
 pub struct KubernetesPeers {
@@ -99,23 +101,36 @@ impl KubernetesPeers {
             _ => Ok(None),
         })
     }
+
+    fn port(endpoint: Endpoint) -> u16 {
+        match endpoint {
+            Endpoint::Fence => PORT,
+            Endpoint::Modex => PORT + 1,
+        }
+    }
 }
 
 impl PeerDiscovery for KubernetesPeers {
     type Error = Error;
 
-    async fn peer(&self, node_rank: u32) -> Result<net::SocketAddr, Self::Error> {
+    async fn peer(
+        &self,
+        node_rank: u32,
+        endpoint: Endpoint,
+    ) -> Result<net::SocketAddr, Self::Error> {
         let mut pod_ips = pin!(self.watch_pods(Some(node_rank)));
         #[allow(
             clippy::unwrap_used,
             reason = "watcher streams automatically recover from errors"
         )]
         let pod_ip = pod_ips.next().await.unwrap()?;
-        // FIXME: Hack - adding +1 here because this method is used by modex, and peers() is used by fences
-        Ok(net::SocketAddr::new(pod_ip.1, PORT + 1))
+        Ok(net::SocketAddr::new(pod_ip.1, Self::port(endpoint)))
     }
 
-    async fn peers(&self) -> Result<HashMap<u32, net::SocketAddr>, Self::Error> {
+    async fn peers(
+        &self,
+        endpoint: Endpoint,
+    ) -> Result<HashMap<u32, net::SocketAddr>, Self::Error> {
         let mut peers = HashMap::new();
         let mut pod_ips = pin!(self.watch_pods(None));
         while peers.len() < self.nnodes as usize {
@@ -124,7 +139,7 @@ impl PeerDiscovery for KubernetesPeers {
                 reason = "watcher streams automatically recover from errors"
             )]
             let (rank, pod_ip) = pod_ips.next().await.unwrap()?;
-            peers.insert(rank, net::SocketAddr::new(pod_ip, PORT));
+            peers.insert(rank, net::SocketAddr::new(pod_ip, Self::port(endpoint)));
         }
         Ok(peers)
     }

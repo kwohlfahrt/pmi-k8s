@@ -9,7 +9,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::{net, time};
 
 use super::ModexError;
-use crate::peer::PeerDiscovery;
+use crate::peer::{Endpoint, PeerDiscovery};
 use crate::pmix::{globals, sys};
 
 pub struct NetFence<'a, D: PeerDiscovery> {

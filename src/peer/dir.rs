@@ -10,6 +10,8 @@ use std::{
 };
 use tokio::sync::mpsc;
 
+use crate::peer::Endpoint;
+
 use super::PeerDiscovery;
 
 #[derive(thiserror::Error, Debug)]
@@ -98,7 +100,9 @@ impl<'a> DirectoryPeers<'a> {
 impl<'a> PeerDiscovery for DirectoryPeers<'a> {
     type Error = Error;
 
-    async fn peer(&self, node_rank: u32) -> Result<net::SocketAddr, Error> {
+    // This is for unit testing only, where we never test both modex + fence in
+    // the same run. So the endpoint doesn't matter.
+    async fn peer(&self, node_rank: u32, _endpoint: Endpoint) -> Result<net::SocketAddr, Error> {
         let path = self.dir.join(format!("{}", node_rank));
         if path.exists() {
             Ok(Self::read_peer(&path)?)
@@ -107,9 +111,13 @@ impl<'a> PeerDiscovery for DirectoryPeers<'a> {
         }
     }
 
-    async fn peers(&self) -> Result<HashMap<u32, net::SocketAddr>, Error> {
+    async fn peers(&self, endpoint: Endpoint) -> Result<HashMap<u32, net::SocketAddr>, Error> {
         (0..self.nnodes)
-            .map(async |node_rank| self.peer(node_rank).await.map(|peer| (node_rank, peer)))
+            .map(async |node_rank| {
+                self.peer(node_rank, endpoint)
+                    .await
+                    .map(|peer| (node_rank, peer))
+            })
             .collect::<FuturesUnordered<_>>()
             .try_collect()
             .await
@@ -156,7 +164,7 @@ mod test {
         }
 
         let peers = discovery
-            .peers()
+            .peers(Endpoint::Fence)
             .await
             .unwrap()
             .into_values()

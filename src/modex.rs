@@ -10,7 +10,7 @@ use tokio::{
 
 use crate::{
     ModexError,
-    peer::PeerDiscovery,
+    peer::{Endpoint, PeerDiscovery},
     pmix::{char_to_u8, globals, slice_from_raw_parts, sys, u8_to_char},
 };
 
@@ -105,7 +105,7 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
         let node_rank = proc.rank / self.nproc as u32;
         let addr = self
             .discovery
-            .peer(node_rank)
+            .peer(node_rank, Endpoint::Modex)
             .await
             .map_err(ModexError::Peer)?;
 
