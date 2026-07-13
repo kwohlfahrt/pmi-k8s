@@ -127,6 +127,10 @@ impl<'a> PeerDiscovery for DirectoryPeers<'a> {
             ffi::CString::new(format!("mpi-{}", rank)).unwrap()
         })
     }
+
+    fn node_rank(&self) -> u32 {
+        self.node_rank.borrow().expect("Node is not registered")
+    }
 }
 
 #[cfg(test)]

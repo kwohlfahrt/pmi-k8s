@@ -139,4 +139,8 @@ impl PeerDiscovery for KubernetesPeers {
             ffi::CString::new(format!("{}-{}", self.job_name, rank)).unwrap()
         })
     }
+
+    fn node_rank(&self) -> u32 {
+        self.node_rank
+    }
 }

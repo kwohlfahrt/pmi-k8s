@@ -16,4 +16,5 @@ pub trait PeerDiscovery {
 
     fn local_ranks(&self, nproc: u16) -> impl Iterator<Item = u32>;
     fn hostnames(&self) -> impl Iterator<Item = ffi::CString>;
+    fn node_rank(&self) -> u32;
 }
