@@ -52,22 +52,15 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
         discovery: &'a D,
         nproc: u16,
     ) -> Result<Self, ModexError<D::Error>> {
-        let listener = net::TcpListener::bind(addr).await?;
-        Ok(Self {
-            listener,
-            discovery,
-            nproc,
-            request_fn: sys::PMIx_server_dmodex_request,
-        })
+        Self::with_request_fn(addr, discovery, nproc, sys::PMIx_server_dmodex_request).await
     }
 
-    #[cfg(test)]
-    async fn with_mock_request(
+    async fn with_request_fn(
         addr: SocketAddr,
         discovery: &'a D,
         nproc: u16,
         request_fn: RequestFn,
-    ) -> io::Result<Self> {
+    ) -> Result<Self, ModexError<D::Error>> {
         let listener = net::TcpListener::bind(addr).await?;
         Ok(Self {
             listener,
@@ -195,7 +188,7 @@ mod test {
         let discovery = DirectoryPeers::new(tmpdir.path(), 2);
         let addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0);
         let sender = NetModex::new(addr, &discovery, nproc).await.unwrap();
-        let responder = NetModex::with_mock_request(addr, &discovery, nproc, request_fn)
+        let responder = NetModex::with_request_fn(addr, &discovery, nproc, request_fn)
             .await
             .unwrap();
         discovery.register(&sender.addr()).unwrap();
