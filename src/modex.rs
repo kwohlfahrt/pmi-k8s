@@ -42,30 +42,23 @@ type RequestFn = unsafe extern "C" fn(
 pub struct NetModex<'a, D: PeerDiscovery> {
     discovery: &'a D,
     listener: net::TcpListener,
-    nproc: u16,
     request_fn: RequestFn,
 }
 
 impl<'a, D: PeerDiscovery> NetModex<'a, D> {
-    pub async fn new(
-        addr: SocketAddr,
-        discovery: &'a D,
-        nproc: u16,
-    ) -> Result<Self, ModexError<D::Error>> {
-        Self::with_request_fn(addr, discovery, nproc, sys::PMIx_server_dmodex_request).await
+    pub async fn new(addr: SocketAddr, discovery: &'a D) -> Result<Self, ModexError<D::Error>> {
+        Self::with_request_fn(addr, discovery, sys::PMIx_server_dmodex_request).await
     }
 
     async fn with_request_fn(
         addr: SocketAddr,
         discovery: &'a D,
-        nproc: u16,
         request_fn: RequestFn,
     ) -> Result<Self, ModexError<D::Error>> {
         let listener = net::TcpListener::bind(addr).await?;
         Ok(Self {
             listener,
             discovery,
-            nproc,
             request_fn,
         })
     }
@@ -92,13 +85,10 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
     }
 
     async fn request_data(&self, proc: sys::pmix_proc_t) -> Result<Vec<u8>, ModexError<D::Error>> {
-        assert!(proc.rank <= sys::PMIX_RANK_VALID);
         let req = Self::serialize_proc(proc);
-
-        let node_rank = proc.rank / self.nproc as u32;
         let addr = self
             .discovery
-            .peer(node_rank, Endpoint::Modex)
+            .peer(&proc, Endpoint::Modex)
             .await
             .map_err(ModexError::Peer)?;
 
@@ -185,10 +175,10 @@ mod test {
         let nproc = 4;
 
         let tmpdir = TempDir::new("modex-test").unwrap();
-        let discovery = DirectoryPeers::new(tmpdir.path(), 2);
+        let discovery = DirectoryPeers::new(tmpdir.path(), nproc, 2);
         let addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0);
-        let sender = NetModex::new(addr, &discovery, nproc).await.unwrap();
-        let responder = NetModex::with_request_fn(addr, &discovery, nproc, request_fn)
+        let sender = NetModex::new(addr, &discovery).await.unwrap();
+        let responder = NetModex::with_request_fn(addr, &discovery, request_fn)
             .await
             .unwrap();
         discovery.register(&sender.addr()).unwrap();

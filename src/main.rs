@@ -25,9 +25,9 @@ async fn main() -> Result<(), Error> {
     let args = Cli::parse();
     let namespace = c"foo";
 
-    let peers = KubernetesPeers::new().await?;
+    let peers = KubernetesPeers::new(args.nproc).await?;
     let fence = NetFence::new(net::SocketAddr::new(WILDCARD, PORT), &peers).await?;
-    let modex = NetModex::new(net::SocketAddr::new(WILDCARD, PORT + 1), &peers, args.nproc).await?;
+    let modex = NetModex::new(net::SocketAddr::new(WILDCARD, PORT + 1), &peers).await?;
 
     let hostnames = peers.hostnames().collect::<Vec<_>>();
     let hostname_refs = hostnames.iter().map(|h| h.as_c_str()).collect::<Vec<_>>();
@@ -36,7 +36,7 @@ async fn main() -> Result<(), Error> {
     let (s, mut e) = pmix::server::Server::init(tempdir.path())?;
     let ns = pmix::server::Namespace::register(&s, namespace, &hostname_refs, args.nproc)?;
     let clients = peers
-        .local_ranks(args.nproc)
+        .local_ranks()
         .map(|i| pmix::server::Client::register(&ns, i))
         .collect::<Result<Vec<_>, _>>()?;
 

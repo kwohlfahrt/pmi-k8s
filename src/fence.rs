@@ -61,14 +61,15 @@ impl<'a, D: PeerDiscovery> NetFence<'a, D> {
         procs: &[sys::pmix_proc_t],
         data: &[u8],
     ) -> Result<Vec<u8>, ModexError<D::Error>> {
-        // TODO: Handle other fence scopes
-        assert_eq!(procs.len(), 1);
-        assert_eq!(procs[0].rank, sys::PMIX_RANK_WILDCARD);
+        let peers = self
+            .discovery
+            .peers(procs, Endpoint::Fence)
+            .await
+            .map_err(ModexError::Peer)?;
 
         // TODO: exclude ourselves from send + recv
-        let peers = self.discovery.peers().await.map_err(ModexError::Peer)?;
         let sends = peers
-            .values()
+            .iter()
             .map(|addr| Self::send(addr, data))
             .collect::<FuturesUnordered<_>>()
             .try_collect::<()>();
@@ -104,7 +105,7 @@ mod test {
     async fn test_fence() {
         let n = 4;
         let tmpdir = TempDir::new("fence-test").unwrap();
-        let discovery = DirectoryPeers::new(tmpdir.path(), n);
+        let discovery = DirectoryPeers::new(tmpdir.path(), 1, n);
         let fences = join_all((0..n).map(async |_| {
             let addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0);
             NetFence::new(addr, &discovery).await.unwrap()

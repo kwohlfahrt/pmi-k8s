@@ -1,17 +1,22 @@
 use futures::{StreamExt, TryStreamExt};
-use std::{collections::HashMap, env, ffi, net, pin::pin};
+use std::{
+    collections::{HashMap, HashSet},
+    env, ffi, net,
+    pin::pin,
+};
 
 use k8s_openapi::api::{batch::v1::Job, core::v1::Pod};
 use kube::{self, Api, Client, Config, runtime::watcher};
 use thiserror::Error;
 
-use crate::peer::Endpoint;
+use crate::{peer::Endpoint, pmix::sys};
 
 use super::PeerDiscovery;
 
 pub struct KubernetesPeers {
     pods: kube::Api<Pod>,
     job_name: String,
+    nproc: u16,
     nnodes: u32,
     node_rank: u32,
 }
@@ -20,6 +25,12 @@ const NAME_LABEL: &str = "batch.kubernetes.io/job-name";
 const RANK_LABEL: &str = "batch.kubernetes.io/job-completion-index";
 // TODO: Allow configuring
 pub const PORT: u16 = 5000;
+
+enum Ranks {
+    Single(u32),
+    Set(HashSet<u32>),
+    All,
+}
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -38,15 +49,16 @@ pub enum Error {
 }
 
 impl KubernetesPeers {
-    pub async fn new() -> Result<Self, Error> {
+    pub async fn new(nproc: u16) -> Result<Self, Error> {
         let job_name = env::var("JOB_NAME")?;
         let node_rank = env::var("JOB_COMPLETION_INDEX")?.parse()?;
         let config = kube::Config::infer().await?;
-        Self::new_with_config(job_name, node_rank, config).await
+        Self::new_with_config(job_name, nproc, node_rank, config).await
     }
 
     async fn new_with_config(
         job_name: String,
+        nproc: u16,
         node_rank: u32,
         config: Config,
     ) -> Result<Self, Error> {
@@ -63,27 +75,37 @@ impl KubernetesPeers {
         Ok(Self {
             pods,
             job_name,
+            nproc,
             nnodes,
             node_rank,
         })
     }
 
-    fn label_selector(&self, node_rank: Option<u32>) -> String {
-        if let Some(node_rank) = node_rank {
-            format!(
+    fn label_selector(&self, node_ranks: &Ranks) -> String {
+        match node_ranks {
+            Ranks::Single(node_rank) => format!(
                 "{}={},{}={}",
-                NAME_LABEL, self.job_name, RANK_LABEL, node_rank
-            )
-        } else {
-            format!("batch.kubernetes.io/job-name={}", self.job_name)
+                NAME_LABEL, self.job_name, RANK_LABEL, node_rank,
+            ),
+            Ranks::Set(node_ranks) => {
+                let node_ranks = node_ranks.iter().map(u32::to_string).collect::<Vec<_>>();
+                format!(
+                    "{}={},{} in ({})",
+                    NAME_LABEL,
+                    self.job_name,
+                    RANK_LABEL,
+                    node_ranks.join(","),
+                )
+            }
+            Ranks::All => format!("batch.kubernetes.io/job-name={}", self.job_name),
         }
     }
 
     fn watch_pods(
         &self,
-        node_rank: Option<u32>,
+        node_ranks: &Ranks,
     ) -> impl futures::Stream<Item = watcher::Result<(u32, net::IpAddr)>> {
-        let config = watcher::Config::default().labels(&self.label_selector(node_rank));
+        let config = watcher::Config::default().labels(&self.label_selector(node_ranks));
         let watcher = watcher::watcher(self.pods.clone(), config);
 
         watcher.try_filter_map(async |e| match e {
@@ -115,10 +137,13 @@ impl PeerDiscovery for KubernetesPeers {
 
     async fn peer(
         &self,
-        node_rank: u32,
+        proc: &sys::pmix_proc_t,
         endpoint: Endpoint,
     ) -> Result<net::SocketAddr, Self::Error> {
-        let mut pod_ips = pin!(self.watch_pods(Some(node_rank)));
+        assert!(proc.rank <= sys::PMIX_RANK_VALID);
+
+        let node_ranks = Ranks::Single(proc.rank / (self.nproc as u32));
+        let mut pod_ips = pin!(self.watch_pods(&node_ranks));
         #[allow(
             clippy::unwrap_used,
             reason = "watcher streams automatically recover from errors"
@@ -129,11 +154,29 @@ impl PeerDiscovery for KubernetesPeers {
 
     async fn peers(
         &self,
+        procs: &[sys::pmix_proc_t],
         endpoint: Endpoint,
-    ) -> Result<HashMap<u32, net::SocketAddr>, Self::Error> {
+    ) -> Result<Vec<net::SocketAddr>, Self::Error> {
         let mut peers = HashMap::new();
-        let mut pod_ips = pin!(self.watch_pods(None));
-        while peers.len() < self.nnodes as usize {
+        let (num_addrs, node_ranks) = if let [
+            sys::pmix_proc_t {
+                rank: sys::PMIX_RANK_WILDCARD,
+                // TODO: Handle other namespaces
+                nspace: _,
+            },
+        ] = procs
+        {
+            (self.nnodes as usize, Ranks::All)
+        } else {
+            let nodes = procs
+                .iter()
+                .map(|sys::pmix_proc_t { rank, nspace: _ }| rank / (self.nproc as u32))
+                .collect::<HashSet<_>>();
+            (nodes.len(), Ranks::Set(nodes))
+        };
+        let mut pod_ips = pin!(self.watch_pods(&node_ranks));
+
+        while peers.len() < num_addrs {
             #[allow(
                 clippy::unwrap_used,
                 reason = "watcher streams automatically recover from errors"
@@ -141,11 +184,12 @@ impl PeerDiscovery for KubernetesPeers {
             let (rank, pod_ip) = pod_ips.next().await.unwrap()?;
             peers.insert(rank, net::SocketAddr::new(pod_ip, Self::port(endpoint)));
         }
-        Ok(peers)
+
+        Ok(peers.into_values().collect::<Vec<_>>())
     }
 
-    fn local_ranks(&self, nproc: u16) -> impl Iterator<Item = u32> {
-        (self.node_rank * nproc as u32)..((self.node_rank + 1) * nproc as u32)
+    fn local_ranks(&self) -> impl Iterator<Item = u32> {
+        (self.node_rank * self.nproc as u32)..((self.node_rank + 1) * self.nproc as u32)
     }
 
     fn hostnames(&self) -> impl Iterator<Item = ffi::CString> {

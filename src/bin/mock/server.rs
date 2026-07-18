@@ -44,7 +44,7 @@ pub(crate) async fn run(args: ServerArgs) -> Result<(), Error> {
 
     let peer_dir = tmpdir.join("peer-discovery-fence");
     fs::create_dir_all(&peer_dir).unwrap();
-    let peers = peer::DirectoryPeers::new(&peer_dir, nnodes);
+    let peers = peer::DirectoryPeers::new(&peer_dir, nprocs, nnodes);
     let fence = NetFence::new(
         net::SocketAddr::new(net::Ipv6Addr::LOCALHOST.into(), 0),
         &peers,
@@ -55,11 +55,10 @@ pub(crate) async fn run(args: ServerArgs) -> Result<(), Error> {
 
     let peer_dir = tmpdir.join("peer-discovery-modex");
     fs::create_dir_all(&peer_dir).unwrap();
-    let peers = peer::DirectoryPeers::new(&peer_dir, nnodes);
+    let peers = peer::DirectoryPeers::new(&peer_dir, nprocs, nnodes);
     let modex = NetModex::new(
         net::SocketAddr::new(net::Ipv6Addr::LOCALHOST.into(), 0),
         &peers,
-        nprocs,
     )
     .await
     .unwrap();
@@ -73,7 +72,7 @@ pub(crate) async fn run(args: ServerArgs) -> Result<(), Error> {
     let namespace = &CString::new(namespace).unwrap();
     let n = pmix::server::Namespace::register(&s, namespace, &hostnames, nprocs)?;
     let clients = peers
-        .local_ranks(nprocs)
+        .local_ranks()
         .map(|i| pmix::server::Client::register(&n, i))
         .collect::<Result<Vec<_>, _>>()?;
 

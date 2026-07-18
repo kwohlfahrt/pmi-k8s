@@ -2,7 +2,7 @@ use futures::{TryStreamExt, stream::FuturesUnordered};
 use notify::{self, Watcher};
 use std::{
     cell::RefCell,
-    collections::HashMap,
+    collections::HashSet,
     ffi, fs,
     io::{self, Write},
     net,
@@ -10,7 +10,7 @@ use std::{
 };
 use tokio::sync::mpsc;
 
-use crate::peer::Endpoint;
+use crate::{peer::Endpoint, pmix::sys};
 
 use super::PeerDiscovery;
 
@@ -26,27 +26,29 @@ pub enum Error {
 
 pub struct DirectoryPeers<'a> {
     dir: &'a Path,
+    nproc: u16,
     nnodes: u32,
     node_rank: RefCell<Option<u32>>,
 }
 
 impl<'a> DirectoryPeers<'a> {
-    pub fn new(dir: &'a Path, nnodes: u32) -> Self {
+    pub fn new(dir: &'a Path, nproc: u16, nnodes: u32) -> Self {
         DirectoryPeers {
             dir,
+            nproc,
             nnodes,
             node_rank: RefCell::new(None),
         }
     }
 
-    fn read_peer(path: &Path) -> Result<net::SocketAddr, Error> {
+    fn read_node(path: &Path) -> Result<net::SocketAddr, Error> {
         Ok(fs::read_to_string(path)?.parse()?)
     }
 
-    async fn wait_for_peer(&self, path: &Path) -> Result<net::SocketAddr, Error> {
+    async fn wait_for_node(&self, path: &Path) -> Result<net::SocketAddr, Error> {
         if path.exists() {
             // Fast path for if path already exists
-            return Self::read_peer(path);
+            return Self::read_node(path);
         }
 
         let (tx, mut rx) = mpsc::channel(1);
@@ -56,7 +58,7 @@ impl<'a> DirectoryPeers<'a> {
 
         if path.exists() {
             // Handle race condition between fast-path and setting up watch
-            return Self::read_peer(path);
+            return Self::read_node(path);
         }
 
         loop {
@@ -69,8 +71,19 @@ impl<'a> DirectoryPeers<'a> {
                 && event.paths.iter().any(|p| p == path)
             {
                 drop(watcher);
-                break Self::read_peer(path);
+                break Self::read_node(path);
             }
+        }
+    }
+
+    // This is for unit testing only, where we never test both modex + fence in
+    // the same run. So the endpoint doesn't matter.
+    async fn node(&self, node_rank: u32, _endpoint: Endpoint) -> Result<net::SocketAddr, Error> {
+        let path = self.dir.join(format!("{}", node_rank));
+        if path.exists() {
+            Ok(Self::read_node(&path)?)
+        } else {
+            Ok(self.wait_for_node(&path).await?)
         }
     }
 
@@ -100,32 +113,53 @@ impl<'a> DirectoryPeers<'a> {
 impl<'a> PeerDiscovery for DirectoryPeers<'a> {
     type Error = Error;
 
-    // This is for unit testing only, where we never test both modex + fence in
-    // the same run. So the endpoint doesn't matter.
-    async fn peer(&self, node_rank: u32, _endpoint: Endpoint) -> Result<net::SocketAddr, Error> {
-        let path = self.dir.join(format!("{}", node_rank));
-        if path.exists() {
-            Ok(Self::read_peer(&path)?)
+    async fn peer(
+        &self,
+        proc: &sys::pmix_proc_t,
+        endpoint: Endpoint,
+    ) -> Result<net::SocketAddr, Error> {
+        assert!(proc.rank <= sys::PMIX_RANK_VALID);
+
+        let node_rank = proc.rank / (self.nproc as u32);
+        self.node(node_rank, endpoint).await
+    }
+
+    async fn peers(
+        &self,
+        procs: &[sys::pmix_proc_t],
+        endpoint: Endpoint,
+    ) -> Result<Vec<net::SocketAddr>, Error> {
+        if let [
+            sys::pmix_proc_t {
+                rank: sys::PMIX_RANK_WILDCARD,
+                // TODO: Handle other namespaces
+                nspace: _,
+            },
+        ] = procs
+        {
+            (0..self.nnodes)
+                .map(async |node_rank| self.node(node_rank, endpoint).await)
+                .collect::<FuturesUnordered<_>>()
+                .try_collect()
+                .await
         } else {
-            Ok(self.wait_for_peer(&path).await?)
+            let nodes = procs
+                .iter()
+                .map(|sys::pmix_proc_t { rank, nspace: _ }| rank / (self.nproc as u32))
+                .collect::<HashSet<_>>();
+
+            nodes
+                .into_iter()
+                .map(async |node_rank| self.node(node_rank, endpoint).await)
+                .collect::<FuturesUnordered<_>>()
+                .try_collect::<Vec<_>>()
+                .await
         }
     }
 
-    async fn peers(&self, endpoint: Endpoint) -> Result<HashMap<u32, net::SocketAddr>, Error> {
-        (0..self.nnodes)
-            .map(async |node_rank| {
-                self.peer(node_rank, endpoint)
-                    .await
-                    .map(|peer| (node_rank, peer))
-            })
-            .collect::<FuturesUnordered<_>>()
-            .try_collect()
-            .await
-    }
-
-    fn local_ranks(&self, nprocs: u16) -> impl Iterator<Item = u32> {
+    fn local_ranks(&self) -> impl Iterator<Item = u32> {
         let node_rank = self.node_rank.borrow().expect("Node is not registered");
-        (node_rank * nprocs as u32)..((node_rank + 1) * nprocs as u32)
+        (node_rank * self.nproc as u32)..((node_rank + 1) * self.nproc as u32)
     }
 
     fn hostnames(&self) -> impl Iterator<Item = std::ffi::CString> {
@@ -154,7 +188,8 @@ mod test {
     async fn test_dir_discovery() {
         let dir = TempDir::new("discovery-test").unwrap();
         let n = 2;
-        let discovery = DirectoryPeers::new(dir.path(), n);
+        let nproc = 4;
+        let discovery = DirectoryPeers::new(dir.path(), nproc, n);
         let expected = (0..n as u16)
             .map(|i| net::SocketAddr::new(net::Ipv4Addr::new(127, 0, 0, 1).into(), 5000 + i))
             .collect::<HashSet<_>>();
@@ -163,11 +198,30 @@ mod test {
             discovery.register(addr).unwrap();
         }
 
+        let wildcard = [sys::pmix_proc_t {
+            rank: sys::PMIX_RANK_WILDCARD,
+            nspace: [0; _],
+        }];
+
         let peers = discovery
-            .peers(Endpoint::Fence)
+            .peers(&wildcard, Endpoint::Fence)
             .await
             .unwrap()
-            .into_values()
+            .into_iter()
+            .collect::<HashSet<_>>();
+        assert_eq!(peers, expected);
+
+        let enumerated = (0..(n * nproc as u32))
+            .map(|rank| sys::pmix_proc_t {
+                rank,
+                nspace: [0; _],
+            })
+            .collect::<Vec<_>>();
+        let peers = discovery
+            .peers(&enumerated, Endpoint::Fence)
+            .await
+            .unwrap()
+            .into_iter()
             .collect::<HashSet<_>>();
         assert_eq!(peers, expected);
     }
