@@ -8,6 +8,7 @@ use tokio::{
     time,
 };
 
+use crate::net::connect_peer;
 use crate::{
     ModexError,
     peer::{Endpoint, PeerDiscovery},
@@ -92,15 +93,7 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
             .await
             .map_err(ModexError::Peer)?;
 
-        let mut s = loop {
-            match net::TcpStream::connect(addr).await {
-                Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
-                    // TODO: Proper backoff
-                    time::sleep(Duration::from_millis(250)).await
-                }
-                r => break r,
-            }
-        }?;
+        let mut s = connect_peer(&addr).await?;
         s.write_all(&req).await?;
         let mut data = Vec::new();
         s.read_to_end(&mut data).await?;
