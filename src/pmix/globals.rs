@@ -37,15 +37,18 @@ impl ModexCallback {
 
     #[cfg(test)]
     #[allow(clippy::type_complexity)]
-    pub fn test_callback(cb: Box<dyn FnOnce(&[u8])>) -> Self {
+    pub fn test_callback(cb: Box<TestCb>) -> Self {
         let cb = Box::new(cb);
         Self(Some(test_cbfunc), Box::into_raw(cb) as *mut ffi::c_void)
     }
 }
 
 #[cfg(test)]
+type TestCb = dyn FnOnce(sys::pmix_status_t, &[u8]);
+
+#[cfg(test)]
 unsafe extern "C" fn test_cbfunc(
-    _status: sys::pmix_status_t,
+    status: sys::pmix_status_t,
     data: *const ffi::c_char,
     ndata: usize,
     cbdata: *mut ffi::c_void,
@@ -55,8 +58,8 @@ unsafe extern "C" fn test_cbfunc(
     // SAFETY: Passed in from modex functions
     let data = unsafe { slice_from_raw_parts(data, ndata) };
     // SAFETY: Constructed in ModexCallback::test_callback
-    let cb = unsafe { Box::from_raw(cbdata as *mut Box<dyn FnOnce(&[u8])>) };
-    cb(char_to_u8(data));
+    let cb = unsafe { Box::from_raw(cbdata as *mut Box<TestCb>) };
+    cb(status, char_to_u8(data));
     if let Some(release_fn) = release_fn {
         // SAFETY: Passed in from modex functions
         unsafe { release_fn(release_cbdata) }
@@ -81,6 +84,7 @@ impl CData {
     }
 
     #[cfg(test)]
+    #[allow(clippy::undocumented_unsafe_blocks)]
     pub fn from_slice(bytes: &[u8]) -> Option<Self> {
         let len = bytes.len();
         let ptr = unsafe { libc::malloc(len) as *mut u8 };

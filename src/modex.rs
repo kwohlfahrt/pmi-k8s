@@ -1,6 +1,7 @@
 use std::ffi;
 use std::{mem, net::SocketAddr};
 
+use futures::FutureExt;
 use futures::{StreamExt, TryStreamExt, future::join};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -8,6 +9,7 @@ use tokio::{
     sync::{mpsc, oneshot},
 };
 use tokio_stream::wrappers::{TcpListenerStream, UnboundedReceiverStream};
+use tracing::warn;
 
 use crate::net::connect_peer;
 use crate::{
@@ -132,19 +134,23 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
         self,
         events: mpsc::UnboundedReceiver<globals::DirectModexEvent>,
     ) -> Result<(), ModexError<D::Error>> {
-        let requests = UnboundedReceiverStream::new(events).map(Ok).try_for_each(
-            async |DirectModexEvent { proc, cb }| {
-                let data = Self::request_data(self.discovery, proc).await?;
-                cb.call(sys::PMIX_SUCCESS as sys::pmix_status_t, data);
-                Ok(())
-            },
-        );
+        let requests = UnboundedReceiverStream::new(events)
+            .then(|DirectModexEvent { proc, cb }| {
+                Self::request_data(self.discovery, proc).map(|r| (cb, r))
+            })
+            .for_each(async |(cb, result)| match result {
+                Ok(data) => cb.call(sys::PMIX_SUCCESS as sys::pmix_status_t, data),
+                Err(err) => {
+                    warn!(%err, "modex request");
+                    cb.call(sys::PMIX_ERROR as sys::pmix_status_t, Vec::new());
+                }
+            });
         let responses = TcpListenerStream::new(self.listener)
             .map_err(ModexError::from)
             .try_for_each(async |c| Self::respond(c, self.request_fn).await);
 
-        let (requests, responses) = join(requests, responses).await;
-        requests.and(responses)
+        let ((), responses) = join(requests, responses).await;
+        responses
     }
 }
 
@@ -155,7 +161,10 @@ mod test {
     use std::{net::Ipv4Addr, pin::pin};
 
     use super::*;
-    use futures::future::{Either, select};
+    use futures::{
+        TryFutureExt,
+        future::{Either, select},
+    };
     use tempdir::TempDir;
 
     unsafe extern "C" fn request_fn(
@@ -173,40 +182,96 @@ mod test {
         sys::PMIX_SUCCESS as sys::pmix_status_t
     }
 
+    type TestError<'a> = ModexError<<DirectoryPeers<'a> as PeerDiscovery>::Error>;
+    async fn create_modex<'a>(
+        discovery: &'a DirectoryPeers<'a>,
+    ) -> (
+        impl Future<Output = Result<(), TestError<'a>>>,
+        mpsc::UnboundedSender<globals::DirectModexEvent>,
+    ) {
+        let addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0);
+        let modex = NetModex::with_request_fn(addr, discovery, request_fn)
+            .await
+            .unwrap();
+        discovery.register(&modex.addr()).unwrap();
+        let (tx, rx) = mpsc::unbounded_channel();
+        (modex.serve(rx), tx)
+    }
+
+    fn create_event(
+        proc: sys::pmix_proc_t,
+    ) -> (
+        globals::DirectModexEvent,
+        oneshot::Receiver<(sys::pmix_status_t, Vec<u8>)>,
+    ) {
+        let (tx, rx) = oneshot::channel();
+        let cb = globals::ModexCallback::test_callback(Box::new(move |status, data| {
+            tx.send((status, Vec::from(data))).unwrap()
+        }));
+        (globals::DirectModexEvent { proc, cb }, rx)
+    }
+
     #[tokio::test]
     async fn test_modex() {
         let nproc = 4;
 
         let tmpdir = TempDir::new("modex-test").unwrap();
         let discovery = DirectoryPeers::new(tmpdir.path(), nproc, 2);
-        let addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0);
-        let requester = NetModex::new(addr, &discovery).await.unwrap();
-        let responder = NetModex::with_request_fn(addr, &discovery, request_fn)
-            .await
-            .unwrap();
-        discovery.register(&requester.addr()).unwrap();
-        discovery.register(&responder.addr()).unwrap();
+        let (requester, tx) = create_modex(&discovery).await;
+        let (responder, _) = create_modex(&discovery).await;
 
         let proc = sys::pmix_proc_t {
             nspace: [0; _],
             rank: nproc as u32,
         };
 
-        let (result_tx, result_rx) = oneshot::channel();
-        let cb = globals::ModexCallback::test_callback(Box::new(move |data| {
-            result_tx.send(Vec::from(data)).unwrap()
-        }));
-
-        let requester = {
-            let (tx, rx) = mpsc::unbounded_channel();
-            tx.send(globals::DirectModexEvent { proc, cb }).unwrap();
-            pin!(requester.serve(rx))
-        };
-        let responder = pin!(responder.serve(mpsc::unbounded_channel().1));
-        let Either::Left((Ok(data), _)) = select(result_rx, join(requester, responder)).await
+        let (event, rx) = create_event(proc);
+        tx.send(event).unwrap();
+        let Either::Left((Ok((_, data)), _)) =
+            select(rx, join(pin!(requester), pin!(responder))).await
         else {
             panic!("expected response");
         };
         assert_eq!(data, vec![1, 2, 3]);
+    }
+
+    async fn create_bad_modex<'a>(
+        discovery: &'a DirectoryPeers<'a>,
+    ) -> impl Future<Output = Result<(), TestError<'a>>> {
+        let addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0);
+        let l = net::TcpListener::bind(addr).await.unwrap();
+        let addr = l.local_addr().unwrap();
+        discovery.register(&addr).unwrap();
+
+        TcpListenerStream::new(l)
+            .try_for_each(async |s| {
+                drop(s);
+                Ok(())
+            })
+            .map_err(ModexError::from)
+    }
+
+    #[tokio::test]
+    async fn test_modex_err() {
+        let nproc = 4;
+
+        let tmpdir = TempDir::new("modex-test").unwrap();
+        let discovery = DirectoryPeers::new(tmpdir.path(), nproc, 2);
+        let (requester, tx) = create_modex(&discovery).await;
+        let responder = create_bad_modex(&discovery).await;
+
+        let proc = sys::pmix_proc_t {
+            nspace: [0; _],
+            rank: nproc as u32,
+        };
+
+        let (event, rx) = create_event(proc);
+        tx.send(event).unwrap();
+        let Either::Left((Ok(result), _)) =
+            select(rx, join(pin!(requester), pin!(responder))).await
+        else {
+            panic!("expected response");
+        };
+        assert_eq!(result, (sys::PMIX_ERROR, vec![]));
     }
 }

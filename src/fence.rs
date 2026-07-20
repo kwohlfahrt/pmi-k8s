@@ -208,6 +208,7 @@ impl<'a, D: PeerDiscovery> NetFence<'a, D> {
                     };
 
                     if let Some((cb, data)) = result {
+                        // TODO: Report failures
                         cb.call(sys::PMIX_SUCCESS as sys::pmix_status_t, data);
                     };
                     Ok(accs)
@@ -251,12 +252,15 @@ mod test {
     fn create_event(
         procs: Vec<sys::pmix_proc_t>,
         data: globals::CData,
-    ) -> (globals::FenceEvent, oneshot::Receiver<Vec<u8>>) {
-        let (result_tx, result_rx) = oneshot::channel();
-        let cb = globals::ModexCallback::test_callback(Box::new(move |data| {
-            result_tx.send(Vec::from(data)).unwrap()
+    ) -> (
+        globals::FenceEvent,
+        oneshot::Receiver<(sys::pmix_status_t, Vec<u8>)>,
+    ) {
+        let (tx, rx) = oneshot::channel();
+        let cb = globals::ModexCallback::test_callback(Box::new(move |status, data| {
+            tx.send((status, Vec::from(data))).unwrap()
         }));
-        (globals::FenceEvent { procs, data, cb }, result_rx)
+        (globals::FenceEvent { procs, data, cb }, rx)
     }
 
     #[tokio::test]
@@ -287,7 +291,7 @@ mod test {
 
         let results = results
             .into_iter()
-            .map(|r| r.map(|r| r.into_iter().collect::<HashSet<_>>()))
+            .map(|r| r.map(|(_, v)| v.into_iter().collect::<HashSet<_>>()))
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
 
@@ -329,7 +333,7 @@ mod test {
 
         let results = results
             .into_iter()
-            .map(|r| r.map(|r| r.into_iter().collect::<HashSet<_>>()))
+            .map(|r| r.map(|(_, v)| v.into_iter().collect::<HashSet<_>>()))
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
 
@@ -383,7 +387,7 @@ mod test {
             .into_iter()
             .fold(
                 HashMap::<_, HashSet<BTreeSet<_>>>::new(),
-                |mut acc, (rank, data)| {
+                |mut acc, (rank, (_, data))| {
                     let rank_acc: &mut _ = acc.entry(rank).or_default();
                     rank_acc.insert(data.into_iter().collect());
                     acc

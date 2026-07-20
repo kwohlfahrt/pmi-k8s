@@ -18,6 +18,7 @@ thiserror = "2"
 libc = "0.2.180"
 nix = { version = "0.31.0", features = ["user"] }
 tempdir = { version = "0.3.7" }
+tracing = "0.1"
 # Entry-point dependencies
 clap = { version = "4.5.57", features = ["derive"] }
 anyhow = "1"
