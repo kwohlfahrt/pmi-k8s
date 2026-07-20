@@ -57,7 +57,6 @@ jobs:
           yq --inplace '.networking.apiServerAddress = strenv(DOCKER_ADDR)' ./tests/cluster.yaml
           kind create cluster --config=./tests/cluster.yaml --kubeconfig=./kubeconfig.yaml
           kind load docker-image pmi-k8s-mpi:test
-          yq --inplace '.clusters[0].cluster.server = (.clusters[0].cluster.server | sub(strenv(DOCKER_ADDR), "host.docker.internal"))' ./kubeconfig.yaml
       - run: |
           docker run --rm -i \
             --env KUBECONFIG=/app/pmi-k8s/kubeconfig.yaml \
