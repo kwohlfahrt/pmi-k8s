@@ -3,6 +3,7 @@ use std::ptr;
 
 use std::{ffi, ops::Deref, slice, sync::RwLock};
 use tokio::sync::mpsc;
+use tracing::{info, warn};
 
 use crate::pmix::{char_to_u8, u8_to_char};
 
@@ -168,7 +169,7 @@ unsafe extern "C" fn client_connected(
     _cbfunc: sys::pmix_op_cbfunc_t,
     _cbdata: *mut std::ffi::c_void,
 ) -> sys::pmix_status_t {
-    println!("client_connected2 called, ninfo: {}", ninfo);
+    info!("client_connected2 called, ninfo: {}", ninfo);
     sys::PMIX_OPERATION_SUCCEEDED as sys::pmix_status_t
 }
 
@@ -190,7 +191,7 @@ unsafe extern "C" fn fence_nb(
             (i.flags & sys::PMIX_INFO_REQD != 0) && (i.flags & sys::PMIX_INFO_REQD_PROCESSED == 0)
         })
         .count();
-    println!(
+    info!(
         "fence_nb called: nprocs={} ninfo={} ({}) ndata={} cb={:?}",
         nprocs, ninfo, ninfo_reqd, ndata, cbfunc
     );
@@ -207,12 +208,13 @@ unsafe extern "C" fn fence_nb(
         // SAFETY: According to the standard, we (the host) are responsible for
         // free'ing the data passed to `fence_nb`.
         let data = unsafe { CData::from_raw_parts(data, ndata) };
-        // mpsc::UnboundedSender::send() only fails if the receiver is dropped,
-        // which only happens in Server::drop, which clears PMIX_STATE and calls
-        // PMIx_server_finalize (deactivating this callback).
-        #[allow(clippy::unwrap_used, reason = "Unreachable if receiver is dropped")]
-        fence_tx.send(FenceEvent { procs, data, cb }).unwrap();
-        sys::PMIX_SUCCESS as sys::pmix_status_t
+        match fence_tx.send(FenceEvent { procs, data, cb }) {
+            Ok(()) => sys::PMIX_SUCCESS as sys::pmix_status_t,
+            Err(err) => {
+                warn!(%err, "error queueing fence");
+                sys::PMIX_ERROR
+            }
+        }
     } else {
         sys::PMIX_ERR_INIT as sys::pmix_status_t
     }
@@ -233,7 +235,7 @@ unsafe extern "C" fn direct_modex(
             (i.flags & sys::PMIX_INFO_REQD != 0) && (i.flags & sys::PMIX_INFO_REQD_PROCESSED == 0)
         })
         .count();
-    println!("direct_modex called: ninfo={} ({})", info.len(), ninfo_reqd);
+    info!("direct_modex called: ninfo={} ({})", info.len(), ninfo_reqd);
     if ninfo_reqd > 0 {
         return sys::PMIX_ERR_NOT_SUPPORTED;
     };
@@ -244,12 +246,13 @@ unsafe extern "C" fn direct_modex(
         // SAFETY: `proc` is passed to us by libpmix, assume it is valid.
         let proc = unsafe { *proc };
         let cb = ModexCallback(cbfunc, cbdata);
-        // mpsc::UnboundedSender::send() only fails if the receiver is dropped,
-        // which only happens in Server::drop, which clears PMIX_STATE and calls
-        // PMIx_server_finalize (deactivating this callback).
-        #[allow(clippy::unwrap_used, reason = "Unreachable if receiver is dropped")]
-        modex_tx.send(DirectModexEvent { proc, cb }).unwrap();
-        sys::PMIX_SUCCESS as sys::pmix_status_t
+        match modex_tx.send(DirectModexEvent { proc, cb }) {
+            Ok(()) => sys::PMIX_SUCCESS as sys::pmix_status_t,
+            Err(err) => {
+                warn!(%err, "error queueing modex");
+                sys::PMIX_ERROR
+            }
+        }
     } else {
         sys::PMIX_ERR_INIT as sys::pmix_status_t
     }
@@ -262,7 +265,7 @@ unsafe extern "C" fn publish(
     _cbfunc: sys::pmix_op_cbfunc_t,
     _cbdata: *mut std::ffi::c_void,
 ) -> sys::pmix_status_t {
-    println!("publish called");
+    info!("publish called");
     sys::PMIX_ERR_NOT_SUPPORTED as sys::pmix_status_t
 }
 
@@ -274,7 +277,7 @@ unsafe extern "C" fn lookup(
     _cbfunc: sys::pmix_lookup_cbfunc_t,
     _cbdata: *mut std::ffi::c_void,
 ) -> sys::pmix_status_t {
-    println!("lookup called");
+    info!("lookup called");
     sys::PMIX_ERR_NOT_SUPPORTED as sys::pmix_status_t
 }
 
@@ -285,7 +288,7 @@ unsafe extern "C" fn query(
     _cbfunc: sys::pmix_info_cbfunc_t,
     _cbdata: *mut std::ffi::c_void,
 ) -> sys::pmix_status_t {
-    println!("query called");
+    info!("query called");
     sys::PMIX_ERR_NOT_SUPPORTED as sys::pmix_status_t
 }
 
