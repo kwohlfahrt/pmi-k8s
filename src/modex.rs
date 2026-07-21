@@ -1,8 +1,9 @@
 use std::ffi;
+use std::pin::pin;
 use std::{mem, net::SocketAddr};
 
 use futures::FutureExt;
-use futures::{StreamExt, TryStreamExt, future::join};
+use futures::{StreamExt, future::select};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net,
@@ -135,9 +136,10 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
         events: mpsc::UnboundedReceiver<globals::DirectModexEvent>,
     ) -> Result<(), ModexError<D::Error>> {
         let requests = UnboundedReceiverStream::new(events)
-            .then(|DirectModexEvent { proc, cb }| {
+            .map(|DirectModexEvent { proc, cb }| {
                 Self::request_data(self.discovery, proc).map(|r| (cb, r))
             })
+            .buffer_unordered(8)
             .for_each(async |(cb, result)| match result {
                 Ok(data) => cb.call(sys::PMIX_SUCCESS as sys::pmix_status_t, data),
                 Err(err) => {
@@ -145,12 +147,16 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
                     cb.call(sys::PMIX_ERROR as sys::pmix_status_t, Vec::new());
                 }
             });
-        let responses = TcpListenerStream::new(self.listener)
-            .map_err(ModexError::from)
-            .try_for_each(async |c| Self::respond(c, self.request_fn).await);
+        let responses =
+            TcpListenerStream::new(self.listener).for_each_concurrent(8, async |c| match c {
+                Ok(c) => Self::respond(c, self.request_fn)
+                    .await
+                    .unwrap_or_else(|err| warn!(%err, "modex response")),
+                Err(err) => warn!(%err, "modex accept"),
+            });
 
-        let ((), responses) = join(requests, responses).await;
-        responses
+        let ((), _) = select(pin!(requests), pin!(responses)).await.factor_first();
+        Ok(())
     }
 }
 
@@ -162,8 +168,8 @@ mod test {
 
     use super::*;
     use futures::{
-        TryFutureExt,
-        future::{Either, select},
+        TryFutureExt, TryStreamExt,
+        future::{Either, join, select},
     };
     use tempdir::TempDir;
 
@@ -218,7 +224,7 @@ mod test {
         let tmpdir = TempDir::new("modex-test").unwrap();
         let discovery = DirectoryPeers::new(tmpdir.path(), nproc, 2);
         let (requester, tx) = create_modex(&discovery).await;
-        let (responder, _) = create_modex(&discovery).await;
+        let (responder, _tx) = create_modex(&discovery).await;
 
         let proc = sys::pmix_proc_t {
             nspace: [0; _],
@@ -227,11 +233,12 @@ mod test {
 
         let (event, rx) = create_event(proc);
         tx.send(event).unwrap();
-        let Either::Left((Ok((_, data)), _)) =
+        let Either::Left((Ok((status, data)), _)) =
             select(rx, join(pin!(requester), pin!(responder))).await
         else {
             panic!("expected response");
         };
+        assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
         assert_eq!(data, vec![1, 2, 3]);
     }
 
