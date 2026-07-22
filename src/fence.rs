@@ -3,12 +3,13 @@ use std::collections::{BTreeSet, HashMap};
 use std::net::SocketAddr;
 use std::{io, mem};
 
-use futures::stream;
+use futures::stream::FuturesUnordered;
+use futures::{FutureExt, select, stream};
 use futures::{StreamExt, TryStreamExt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net;
 use tokio::sync::mpsc;
-use tokio_stream::wrappers::{TcpListenerStream, UnboundedReceiverStream};
+use tracing::warn;
 
 use super::ModexError;
 use crate::net::connect_peer;
@@ -23,47 +24,45 @@ struct FenceId(Participants, Sequence);
 
 #[derive(Default)]
 struct FenceAcc {
-    npeers: usize,
-    data: Option<Vec<u8>>,
-    cb_npeers: Option<(globals::ModexCallback, usize)>,
-}
-
-enum ServeEvent {
-    Submit {
-        cb: globals::ModexCallback,
-        npeers: usize,
-    },
-    Accept {
-        data: Vec<u8>,
-    },
+    complete: usize,
+    data: Vec<u8>,
+    cb: Option<globals::ModexCallback>,
+    expected: Option<usize>,
 }
 
 impl FenceAcc {
-    fn update(&mut self, event: ServeEvent) {
-        match event {
-            ServeEvent::Submit { cb, npeers } => self.cb_npeers = Some((cb, npeers)),
-            ServeEvent::Accept { data } => {
-                if let Some(ref mut acc) = self.data {
-                    acc.extend(data);
-                } else {
-                    let _ = self.data.insert(data);
-                }
-                self.npeers += 1;
+    fn update(&mut self, data: FenceData) {
+        match data {
+            FenceData::Local(npeers) => {
+                let _ = self.expected.insert(npeers);
+            }
+            FenceData::Remote(data) => {
+                self.data.extend(data);
+                self.complete += 1
             }
         };
     }
 
     fn complete(&mut self) -> Option<(globals::ModexCallback, Vec<u8>)> {
-        if let Some((cb, _)) = self.cb_npeers.take_if(|(_, npeers)| *npeers == self.npeers) {
-            Some((cb, self.data.take().unwrap_or_default()))
+        if self.expected != Some(self.complete) {
+            None
+        } else if let Some(cb) = self.cb.take() {
+            Some((cb, mem::take(&mut self.data)))
         } else {
             None
         }
     }
 }
 
-pub struct NetFence<'a, D: PeerDiscovery> {
+enum FenceData {
+    Local(usize),
+    Remote(Vec<u8>),
+}
+
+pub struct NetFence<'a, D> {
     listener: net::TcpListener,
+    sequences: HashMap<Participants, Sequence>,
+    in_flight: HashMap<FenceId, FenceAcc>,
     discovery: &'a D,
 }
 
@@ -73,6 +72,8 @@ impl<'a, D: PeerDiscovery> NetFence<'a, D> {
         Ok(Self {
             listener,
             discovery,
+            sequences: Default::default(),
+            in_flight: Default::default(),
         })
     }
 
@@ -145,94 +146,138 @@ impl<'a, D: PeerDiscovery> NetFence<'a, D> {
             .await
     }
 
+    fn fence_id(&mut self, procs: Vec<sys::pmix_proc_t>) -> FenceId {
+        let participants = procs.into_iter().collect::<BTreeSet<_>>();
+        let curr = self.sequences.entry(participants.clone()).or_default();
+        let seq = *curr;
+        *curr += 1;
+        FenceId(participants, seq)
+    }
+
+    fn accept_event(
+        &mut self,
+        e: globals::FenceEvent,
+    ) -> impl Future<Output = Result<(FenceId, usize), ModexError<D::Error>>> + use<'a, D> {
+        let globals::FenceEvent { procs, data, cb } = e;
+        let id = self.fence_id(procs.clone());
+        let acc = self.in_flight.entry(id.clone()).or_default();
+        // Record the callback for future status reports. This must happen synchronously.
+        let _ = acc.cb.insert(cb);
+
+        let discovery = self.discovery;
+        async move {
+            let peers = discovery
+                .peers(&procs, Endpoint::Fence)
+                .await
+                .map_err(ModexError::Peer)?;
+            let npeers = peers.len();
+            let header = Self::serialize_header(&id);
+            Self::send(peers, header, data).await?;
+            Ok((id, npeers))
+        }
+    }
+
+    async fn accept_conn(mut c: net::TcpStream) -> Result<(FenceId, Vec<u8>), io::Error> {
+        let id = Self::parse_header(&mut c).await?;
+        let mut data = Vec::new();
+        c.read_to_end(&mut data).await?;
+        Ok((id, data))
+    }
+
+    fn complete_fence(&mut self, id: FenceId, data: FenceData) {
+        let result = match self.in_flight.entry(id) {
+            Entry::Occupied(mut e) => {
+                let acc = e.get_mut();
+                acc.update(data);
+                if let Some(result) = acc.complete() {
+                    e.remove();
+                    Some(result)
+                } else {
+                    None
+                }
+            }
+            Entry::Vacant(e) => {
+                let mut acc = FenceAcc::default();
+                acc.update(data);
+                if let Some(result) = acc.complete() {
+                    Some(result)
+                } else {
+                    e.insert(acc);
+                    None
+                }
+            }
+        };
+
+        if let Some((cb, data)) = result {
+            cb.call(sys::PMIX_SUCCESS as sys::pmix_status_t, data);
+        }
+    }
+
     pub async fn serve(
-        self,
-        events: mpsc::UnboundedReceiver<globals::FenceEvent>,
+        mut self,
+        mut events: mpsc::UnboundedReceiver<globals::FenceEvent>,
     ) -> Result<(), ModexError<D::Error>> {
-        let mut sequences: HashMap<Participants, Sequence> = Default::default();
-        let events = UnboundedReceiverStream::new(events)
-            .map(|e| {
-                let participants = e.procs.iter().cloned().collect::<BTreeSet<_>>();
-                let curr = sequences.entry(participants.clone()).or_default();
-                let seq = *curr;
-                *curr += 1;
-                (FenceId(participants, seq), e)
-            })
-            .then(async |(id, globals::FenceEvent { procs, data, cb })| {
-                let peers = self
-                    .discovery
-                    .peers(&procs, Endpoint::Fence)
-                    .await
-                    .map_err(ModexError::Peer)?;
-                let npeers = peers.len();
+        let mut local = FuturesUnordered::new();
+        let mut remote = FuturesUnordered::new();
 
-                let header = Self::serialize_header(&id);
-                Self::send(peers, header, data).await?;
-                Ok((id, ServeEvent::Submit { cb, npeers }))
-            });
-
-        let conns = TcpListenerStream::new(self.listener)
-            .and_then(async |mut c| {
-                let id = Self::parse_header(&mut c).await?;
-                let mut data = Vec::new();
-                c.read_to_end(&mut data).await?;
-                Ok((id, ServeEvent::Accept { data }))
-            })
-            .map_err(ModexError::<D::Error>::from);
-
-        stream::select(events, conns)
-            .try_fold(
-                HashMap::<FenceId, FenceAcc>::new(),
-                async |mut accs, (id, e)| {
-                    let result = match accs.entry(id) {
-                        Entry::Occupied(mut entry) => {
-                            let acc = entry.get_mut();
-                            acc.update(e);
-                            if let Some(result) = acc.complete() {
-                                entry.remove();
-                                Some(result)
-                            } else {
-                                None
-                            }
-                        }
-                        Entry::Vacant(entry) => {
-                            let mut acc = FenceAcc::default();
-                            acc.update(e);
-                            if let Some(result) = acc.complete() {
-                                Some(result)
-                            } else {
-                                entry.insert(acc);
-                                None
-                            }
-                        }
-                    };
-
-                    if let Some((cb, data)) = result {
-                        // TODO: Report failures
-                        cb.call(sys::PMIX_SUCCESS as sys::pmix_status_t, data);
-                    };
-                    Ok(accs)
+        let result = loop {
+            select! {
+                e = events.recv().fuse() => match e {
+                    Some(e) => local.push(self.accept_event(e)),
+                    None => break Ok(()),
                 },
-            )
-            .await?;
+                c = self.listener.accept().fuse() => match c {
+                    Ok((c, _)) => remote.push(Self::accept_conn(c)),
+                    Err(err) => warn!(%err, "fence accept"),
+                },
+                l = local.select_next_some() => match l {
+                    Ok((id, npeers)) => self.complete_fence(id, FenceData::Local(npeers)),
+                    Err(err) => {
+                        warn!(%err, "local fence");
+                        break Err(err)
+                    }
+                },
+                r = remote.select_next_some() => match r {
+                    Ok((id, data)) => self.complete_fence(id, FenceData::Remote(data)),
+                    Err(err) => {
+                        warn!(%err, "remote fence");
+                        break Err(err.into())
+                    }
+                },
+            }
+        };
 
-        Ok(())
+        events.close(); // Stop accepting more events from the PMIx server
+        while let Some(globals::FenceEvent { cb, .. }) = events.recv().await {
+            cb.call(sys::PMIX_ERROR, Vec::new());
+        }
+
+        for cb in self
+            .in_flight
+            .drain()
+            .flat_map(|(_, FenceAcc { cb, .. })| cb)
+        {
+            cb.call(sys::PMIX_ERROR, Vec::new());
+        }
+
+        result
     }
 }
 
 #[cfg(test)]
 mod test {
     #![allow(clippy::unwrap_used, clippy::panic)]
-    use std::{collections::HashSet, net::Ipv4Addr};
+    use std::{collections::HashSet, net::Ipv4Addr, pin::pin};
 
     use super::*;
-    use crate::peer::DirectoryPeers;
+    use crate::{peer::DirectoryPeers, pmix::globals::CData};
     use futures::{
         TryFutureExt,
-        future::{Either, join_all, select},
+        future::{Either, join, join_all, select},
     };
     use tempdir::TempDir;
     use tokio::sync::oneshot;
+    use tokio_stream::wrappers::TcpListenerStream;
 
     type TestError<'a> = ModexError<<DirectoryPeers<'a> as PeerDiscovery>::Error>;
 
@@ -273,7 +318,7 @@ mod test {
             .into_iter()
             .unzip::<_, _, Vec<_>, Vec<_>>();
 
-        let results = txs.into_iter().enumerate().map(|(i, tx)| {
+        let results = txs.iter().enumerate().map(|(i, tx)| {
             let data = globals::CData::from_slice(&[i as u8]).unwrap();
             let procs = vec![sys::pmix_proc_t {
                 nspace: [0; _],
@@ -409,5 +454,47 @@ mod test {
             ),
         ]);
         assert_eq!(results, expected);
+    }
+
+    async fn create_bad_fence<'a>(
+        discovery: &'a DirectoryPeers<'a>,
+    ) -> impl Future<Output = Result<(), TestError<'a>>> {
+        let addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0);
+        let l = net::TcpListener::bind(addr).await.unwrap();
+        let addr = l.local_addr().unwrap();
+        discovery.register(&addr).unwrap();
+
+        TcpListenerStream::new(l)
+            .try_for_each(async |s| {
+                drop(s);
+                Ok(())
+            })
+            .map_err(ModexError::from)
+    }
+
+    #[tokio::test]
+    async fn test_fence_err() {
+        let tmpdir = TempDir::new("fence-test").unwrap();
+        let discovery = DirectoryPeers::new(tmpdir.path(), 1, 2);
+        let (fence, tx) = create_fence(&discovery).await;
+        let bad_fence = create_bad_fence(&discovery).await;
+        let (event, rx) = create_event(
+            vec![sys::pmix_proc_t {
+                rank: sys::PMIX_RANK_WILDCARD,
+                nspace: [0; _],
+            }],
+            CData::from_slice(&[1]).unwrap(),
+        );
+        tx.send(event).unwrap();
+
+        let (result, Either::Left((exit, _))) =
+            join(rx, select(pin!(fence), pin!(bad_fence))).await
+        else {
+            panic!("expected fence exit")
+        };
+
+        let (status, _) = result.unwrap();
+        assert_eq!(status, sys::PMIX_ERROR);
+        assert!(exit.is_err());
     }
 }
