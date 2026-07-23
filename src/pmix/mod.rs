@@ -8,6 +8,8 @@ pub mod server;
 pub mod sys;
 mod value;
 
+pub use value::{PmixError, PmixStatus};
+
 pub fn get_version_str() -> &'static ffi::CStr {
     // SAFETY: PMIx_Get_version returns a statically allocated C string.
     unsafe { ffi::CStr::from_ptr(sys::PMIx_Get_version()) }

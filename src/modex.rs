@@ -13,6 +13,7 @@ use tokio_stream::wrappers::{TcpListenerStream, UnboundedReceiverStream};
 use tracing::warn;
 
 use crate::net::connect_peer;
+use crate::pmix::{PmixError, PmixStatus};
 use crate::{
     ModexError,
     peer::{Endpoint, PeerDiscovery},
@@ -23,20 +24,23 @@ use crate::{
     },
 };
 
+type ModexResponse = Result<Vec<u8>, PmixError>;
+
 unsafe extern "C" fn response(
     status: sys::pmix_status_t,
     data: *mut std::ffi::c_char,
     sz: usize,
     cbdata: *mut std::ffi::c_void,
 ) {
-    assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
-    // SAFETY: Data is owned by PMIx and free'd after this function, so we must
-    // copy before returning.
-    let data = unsafe { slice_from_raw_parts(data, sz) };
-    let data = char_to_u8(data).to_vec();
+    let data = PmixStatus(status).check().map(|()| {
+        // SAFETY: Data is owned by PMIx and free'd after this function, so we must
+        // copy before returning.
+        let data = unsafe { slice_from_raw_parts(data, sz) };
+        char_to_u8(data).to_vec()
+    });
 
-    // SAFETY: We created `cbdata`` in `NetModex::respond`, from `oneshot::Sender<Vec<u8>>`
-    let tx = *unsafe { Box::from_raw(cbdata as *mut oneshot::Sender<Vec<u8>>) };
+    // SAFETY: We created `cbdata`` in `NetModex::respond`
+    let tx = *unsafe { Box::from_raw(cbdata as *mut oneshot::Sender<ModexResponse>) };
 
     // If the receiver is dropped, there is nothing we have left to do.
     tx.send(data).unwrap_or_default()
@@ -116,17 +120,22 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
     ) -> Result<(), ModexError<D::Error>> {
         let mut buf = [0; _];
         c.read_exact(&mut buf).await?;
-        let (tx, rx) = oneshot::channel::<Vec<u8>>();
+        let (tx, rx) = oneshot::channel::<ModexResponse>();
         let proc = Self::parse_proc(buf);
-        let tx = Box::new(tx);
+        let tx = Box::into_raw(Box::new(tx));
 
         // SAFETY: `request_fn` is PMIx_server_dmodex_request outside of tests.
         // `response` unwraps `cbdata` into oneshot::Sender<Vec<u8>>.
-        let status =
-            unsafe { (request_fn)(&proc, Some(response), Box::into_raw(tx) as *mut ffi::c_void) };
-        assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
+        let status = unsafe { (request_fn)(&proc, Some(response), tx as *mut ffi::c_void) };
+        PmixStatus(status).check().map_err(|err| {
+            // SAFETY: If `PMIx_server_dmodex_request` returns a non-success
+            // code, the callback won't be called, so we must reclaim it.
+            let tx = unsafe { Box::from_raw(tx) };
+            drop(tx);
+            ModexError::Server(err)
+        })?;
 
-        let data = rx.await.expect("PMIx did not return modex response");
+        let data = rx.await.expect("modex response never sent")?;
         c.write_all(&data).await?;
         Ok(())
     }

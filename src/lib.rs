@@ -4,14 +4,16 @@ use clap::Parser;
 
 pub mod fence;
 pub mod modex;
+pub mod net;
 pub mod peer;
 pub mod pmix;
-pub mod net;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ModexError<E: Error + fmt::Debug> {
     #[error("error in modex communication")]
     Io(#[from] io::Error),
+    #[error("error from pmix server")]
+    Server(#[from] pmix::PmixError),
     #[error("error in peer discovery")]
     Peer(E),
 }
