@@ -187,6 +187,11 @@ unsafe extern "C" fn fence_nb(
     cbfunc: sys::pmix_modex_cbfunc_t,
     cbdata: *mut std::ffi::c_void,
 ) -> sys::pmix_status_t {
+    // SAFETY: According to the standard, we (the host) are responsible for
+    // free'ing the data passed to `fence_nb`.
+    let data = unsafe { CData::from_raw_parts(data, ndata) };
+    let cb = ModexCallback(cbfunc, cbdata);
+
     // SAFETY: `info` is provided by `libpmix`, and is valid for this function.
     let info = unsafe { slice_from_raw_parts(info, ninfo) };
     let ninfo_reqd = info
@@ -206,17 +211,17 @@ unsafe extern "C" fn fence_nb(
     let guard = PMIX_STATE.read().unwrap();
 
     if let Some(State::Server { ref fence_tx, .. }) = *guard {
-        // SAFETY: At least one proc must be participating in the fence, so procs must be valid
-        let procs = unsafe { slice::from_raw_parts(procs, nprocs) }.into();
-        let cb = ModexCallback(cbfunc, cbdata);
-        // SAFETY: According to the standard, we (the host) are responsible for
-        // free'ing the data passed to `fence_nb`.
-        let data = unsafe { CData::from_raw_parts(data, ndata) };
-        match fence_tx.send(FenceEvent { procs, data, cb }) {
-            Ok(()) => sys::PMIX_SUCCESS as sys::pmix_status_t,
-            Err(err) => {
-                warn!(%err, "error queueing fence");
-                sys::PMIX_ERROR
+        if procs.is_null() {
+            sys::PMIX_ERR_INVALID_ARG
+        } else {
+            // SAFETY: We have just checked that procs is valid
+            let procs = unsafe { slice::from_raw_parts(procs, nprocs) }.into();
+            match fence_tx.send(FenceEvent { procs, data, cb }) {
+                Ok(()) => sys::PMIX_SUCCESS as sys::pmix_status_t,
+                Err(err) => {
+                    warn!(%err, "error queueing fence");
+                    sys::PMIX_ERROR
+                }
             }
         }
     } else {
@@ -249,12 +254,17 @@ unsafe extern "C" fn direct_modex(
     if let Some(State::Server { ref modex_tx, .. }) = *guard {
         // SAFETY: `proc` is passed to us by libpmix, assume it is valid.
         let proc = unsafe { *proc };
-        let cb = ModexCallback(cbfunc, cbdata);
-        match modex_tx.send(DirectModexEvent { proc, cb }) {
-            Ok(()) => sys::PMIX_SUCCESS as sys::pmix_status_t,
-            Err(err) => {
-                warn!(%err, "error queueing modex");
-                sys::PMIX_ERROR
+        if proc.rank > sys::PMIX_RANK_VALID {
+            // TODO: Support job-level modex
+            sys::PMIX_ERR_NOT_SUPPORTED
+        } else {
+            let cb = ModexCallback(cbfunc, cbdata);
+            match modex_tx.send(DirectModexEvent { proc, cb }) {
+                Ok(()) => sys::PMIX_SUCCESS as sys::pmix_status_t,
+                Err(err) => {
+                    warn!(%err, "error queueing modex");
+                    sys::PMIX_ERROR
+                }
             }
         }
     } else {

@@ -109,6 +109,10 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
 
         let mut s = connect_peer(&addr).await?;
         s.write_all(&req).await?;
+        let mut status = [0; _];
+        s.read_exact(&mut status).await?;
+        PmixStatus(sys::pmix_status_t::from_be_bytes(status)).check()?;
+
         let mut data = Vec::new();
         s.read_to_end(&mut data).await?;
         Ok(data)
@@ -135,9 +139,17 @@ impl<'a, D: PeerDiscovery> NetModex<'a, D> {
             ModexError::Server(err)
         })?;
 
-        let data = rx.await.expect("modex response never sent")?;
-        c.write_all(&data).await?;
-        Ok(())
+        match rx.await.expect("modex response never sent") {
+            Ok(data) => {
+                let code = sys::PMIX_SUCCESS as sys::pmix_status_t;
+                c.write_all(&code.to_be_bytes()).await?;
+                Ok(c.write_all(&data).await?)
+            }
+            Err(err @ PmixError(code)) => {
+                c.write_all(&code.to_be_bytes()).await?;
+                Err(ModexError::Server(err))
+            }
+        }
     }
 
     pub async fn serve(
