@@ -1,5 +1,9 @@
+#[cfg(test)]
+use std::ptr;
+
 use std::{ffi, ops::Deref, slice, sync::RwLock};
 use tokio::sync::mpsc;
+use tracing::{info, warn};
 
 use crate::pmix::{char_to_u8, u8_to_char};
 
@@ -31,6 +35,40 @@ impl ModexCallback {
             )
         }
     }
+
+    #[cfg(test)]
+    pub fn empty() -> Self {
+        Self(None, ptr::null_mut())
+    }
+
+    #[cfg(test)]
+    pub fn test_callback(cb: Box<TestCb>) -> Self {
+        let cb = Box::new(cb);
+        Self(Some(test_cbfunc), Box::into_raw(cb) as *mut ffi::c_void)
+    }
+}
+
+#[cfg(test)]
+type TestCb = dyn FnOnce(sys::pmix_status_t, &[u8]);
+
+#[cfg(test)]
+unsafe extern "C" fn test_cbfunc(
+    status: sys::pmix_status_t,
+    data: *const ffi::c_char,
+    ndata: usize,
+    cbdata: *mut ffi::c_void,
+    release_fn: sys::pmix_release_cbfunc_t,
+    release_cbdata: *mut ffi::c_void,
+) {
+    // SAFETY: Passed in from modex functions
+    let data = unsafe { slice_from_raw_parts(data, ndata) };
+    // SAFETY: Constructed in ModexCallback::test_callback
+    let cb = unsafe { Box::from_raw(cbdata as *mut Box<TestCb>) };
+    cb(status, char_to_u8(data));
+    if let Some(release_fn) = release_fn {
+        // SAFETY: Passed in from modex functions
+        unsafe { release_fn(release_cbdata) }
+    }
 }
 
 pub struct CData(*mut ffi::c_char, usize);
@@ -48,6 +86,19 @@ impl CData {
     /// We take ownership of `ptr` and `libc::free` it on drop.
     pub unsafe fn from_raw_parts(ptr: *mut ffi::c_char, size: usize) -> Self {
         Self(ptr, size)
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::undocumented_unsafe_blocks)]
+    pub fn from_slice(bytes: &[u8]) -> Option<Self> {
+        let len = bytes.len();
+        let ptr = unsafe { libc::malloc(len) as *mut u8 };
+        if ptr.is_null() {
+            None
+        } else {
+            unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, len) };
+            Some(Self(ptr as *mut ffi::c_char, len))
+        }
     }
 }
 
@@ -71,22 +122,23 @@ impl Drop for CData {
     }
 }
 
-#[allow(clippy::large_enum_variant, reason = "pmix_proc_t is large")]
-pub enum Event {
-    Fence {
-        procs: Vec<sys::pmix_proc_t>,
-        data: CData,
-        cb: ModexCallback,
-    },
-    DirectModex {
-        proc: sys::pmix_proc_t,
-        cb: ModexCallback,
-    },
+pub struct FenceEvent {
+    pub procs: Vec<sys::pmix_proc_t>,
+    pub data: CData,
+    pub cb: ModexCallback,
+}
+
+pub struct DirectModexEvent {
+    pub proc: sys::pmix_proc_t,
+    pub cb: ModexCallback,
 }
 
 pub enum State {
     Client,
-    Server(mpsc::UnboundedSender<Event>),
+    Server {
+        fence_tx: mpsc::UnboundedSender<FenceEvent>,
+        modex_tx: mpsc::UnboundedSender<DirectModexEvent>,
+    },
 }
 
 pub static PMIX_STATE: RwLock<Option<State>> = RwLock::new(None);
@@ -121,7 +173,7 @@ unsafe extern "C" fn client_connected(
     _cbfunc: sys::pmix_op_cbfunc_t,
     _cbdata: *mut std::ffi::c_void,
 ) -> sys::pmix_status_t {
-    println!("client_connected2 called, ninfo: {}", ninfo);
+    info!("client_connected2 called, ninfo: {}", ninfo);
     sys::PMIX_OPERATION_SUCCEEDED as sys::pmix_status_t
 }
 
@@ -135,6 +187,11 @@ unsafe extern "C" fn fence_nb(
     cbfunc: sys::pmix_modex_cbfunc_t,
     cbdata: *mut std::ffi::c_void,
 ) -> sys::pmix_status_t {
+    // SAFETY: According to the standard, we (the host) are responsible for
+    // free'ing the data passed to `fence_nb`.
+    let data = unsafe { CData::from_raw_parts(data, ndata) };
+    let cb = ModexCallback(cbfunc, cbdata);
+
     // SAFETY: `info` is provided by `libpmix`, and is valid for this function.
     let info = unsafe { slice_from_raw_parts(info, ninfo) };
     let ninfo_reqd = info
@@ -143,7 +200,7 @@ unsafe extern "C" fn fence_nb(
             (i.flags & sys::PMIX_INFO_REQD != 0) && (i.flags & sys::PMIX_INFO_REQD_PROCESSED == 0)
         })
         .count();
-    println!(
+    info!(
         "fence_nb called: nprocs={} ninfo={} ({}) ndata={} cb={:?}",
         nprocs, ninfo, ninfo_reqd, ndata, cbfunc
     );
@@ -153,19 +210,20 @@ unsafe extern "C" fn fence_nb(
     #[allow(clippy::unwrap_used, reason = "no asserts poison the global state")]
     let guard = PMIX_STATE.read().unwrap();
 
-    if let Some(State::Server(ref s)) = *guard {
-        // SAFETY: At least one proc must be participating in the fence, so procs must be valid
-        let procs = unsafe { slice::from_raw_parts(procs, nprocs) }.into();
-        let cb = ModexCallback(cbfunc, cbdata);
-        // SAFETY: According to the standard, we (the host) are responsible for
-        // free'ing the data passed to `fence_nb`.
-        let data = unsafe { CData::from_raw_parts(data, ndata) };
-        // mpsc::UnboundedSender::send() only fails if the receiver is dropped,
-        // which only happens in Server::drop, which clears PMIX_STATE and calls
-        // PMIx_server_finalize (deactivating this callback).
-        #[allow(clippy::unwrap_used, reason = "Unreachable if receiver is dropped")]
-        s.send(Event::Fence { procs, data, cb }).unwrap();
-        sys::PMIX_SUCCESS as sys::pmix_status_t
+    if let Some(State::Server { ref fence_tx, .. }) = *guard {
+        if procs.is_null() {
+            sys::PMIX_ERR_INVALID_ARG
+        } else {
+            // SAFETY: We have just checked that procs is valid
+            let procs = unsafe { slice::from_raw_parts(procs, nprocs) }.into();
+            match fence_tx.send(FenceEvent { procs, data, cb }) {
+                Ok(()) => sys::PMIX_SUCCESS as sys::pmix_status_t,
+                Err(err) => {
+                    warn!(%err, "error queueing fence");
+                    sys::PMIX_ERROR
+                }
+            }
+        }
     } else {
         sys::PMIX_ERR_INIT as sys::pmix_status_t
     }
@@ -186,23 +244,29 @@ unsafe extern "C" fn direct_modex(
             (i.flags & sys::PMIX_INFO_REQD != 0) && (i.flags & sys::PMIX_INFO_REQD_PROCESSED == 0)
         })
         .count();
-    println!("direct_modex called: ninfo={} ({})", info.len(), ninfo_reqd);
+    info!("direct_modex called: ninfo={} ({})", info.len(), ninfo_reqd);
     if ninfo_reqd > 0 {
         return sys::PMIX_ERR_NOT_SUPPORTED;
     };
     #[allow(clippy::unwrap_used, reason = "no asserts poison the global state")]
     let guard = PMIX_STATE.read().unwrap();
 
-    if let Some(State::Server(ref s)) = *guard {
+    if let Some(State::Server { ref modex_tx, .. }) = *guard {
         // SAFETY: `proc` is passed to us by libpmix, assume it is valid.
         let proc = unsafe { *proc };
-        let cb = ModexCallback(cbfunc, cbdata);
-        // mpsc::UnboundedSender::send() only fails if the receiver is dropped,
-        // which only happens in Server::drop, which clears PMIX_STATE and calls
-        // PMIx_server_finalize (deactivating this callback).
-        #[allow(clippy::unwrap_used, reason = "Unreachable if receiver is dropped")]
-        s.send(Event::DirectModex { proc, cb }).unwrap();
-        sys::PMIX_SUCCESS as sys::pmix_status_t
+        if proc.rank > sys::PMIX_RANK_VALID {
+            // TODO: Support job-level modex
+            sys::PMIX_ERR_NOT_SUPPORTED
+        } else {
+            let cb = ModexCallback(cbfunc, cbdata);
+            match modex_tx.send(DirectModexEvent { proc, cb }) {
+                Ok(()) => sys::PMIX_SUCCESS as sys::pmix_status_t,
+                Err(err) => {
+                    warn!(%err, "error queueing modex");
+                    sys::PMIX_ERROR
+                }
+            }
+        }
     } else {
         sys::PMIX_ERR_INIT as sys::pmix_status_t
     }
@@ -215,7 +279,7 @@ unsafe extern "C" fn publish(
     _cbfunc: sys::pmix_op_cbfunc_t,
     _cbdata: *mut std::ffi::c_void,
 ) -> sys::pmix_status_t {
-    println!("publish called");
+    info!("publish called");
     sys::PMIX_ERR_NOT_SUPPORTED as sys::pmix_status_t
 }
 
@@ -227,7 +291,7 @@ unsafe extern "C" fn lookup(
     _cbfunc: sys::pmix_lookup_cbfunc_t,
     _cbdata: *mut std::ffi::c_void,
 ) -> sys::pmix_status_t {
-    println!("lookup called");
+    info!("lookup called");
     sys::PMIX_ERR_NOT_SUPPORTED as sys::pmix_status_t
 }
 
@@ -238,7 +302,7 @@ unsafe extern "C" fn query(
     _cbfunc: sys::pmix_info_cbfunc_t,
     _cbdata: *mut std::ffi::c_void,
 ) -> sys::pmix_status_t {
-    println!("query called");
+    info!("query called");
     sys::PMIX_ERR_NOT_SUPPORTED as sys::pmix_status_t
 }
 
