@@ -270,14 +270,14 @@ mod test {
     use std::{collections::HashSet, net::Ipv4Addr, pin::pin};
 
     use super::*;
-    use crate::{peer::DirectoryPeers, pmix::globals::CData};
+    use crate::peer::DirectoryPeers;
     use futures::{
         TryFutureExt,
         future::{Either, join, join_all, select},
     };
     use tempdir::TempDir;
     use tokio::sync::oneshot;
-    use tokio_stream::wrappers::TcpListenerStream;
+    use tokio_stream::wrappers::{TcpListenerStream, UnboundedReceiverStream};
 
     type TestError<'a> = ModexError<<DirectoryPeers<'a> as PeerDiscovery>::Error>;
 
@@ -458,18 +458,48 @@ mod test {
 
     async fn create_bad_fence<'a>(
         discovery: &'a DirectoryPeers<'a>,
-    ) -> impl Future<Output = Result<(), TestError<'a>>> {
+    ) -> (
+        impl Future<Output = Result<(), TestError<'a>>>,
+        mpsc::UnboundedSender<globals::FenceEvent>,
+    ) {
         let addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0);
         let l = net::TcpListener::bind(addr).await.unwrap();
         let addr = l.local_addr().unwrap();
         discovery.register(&addr).unwrap();
 
-        TcpListenerStream::new(l)
-            .try_for_each(async |s| {
-                drop(s);
+        let (tx, rx) = mpsc::unbounded_channel();
+
+        let l = TcpListenerStream::new(l)
+            .try_for_each(async |mut s| {
+                tokio::io::copy(&mut s, &mut tokio::io::sink()).await?;
                 Ok(())
             })
-            .map_err(ModexError::from)
+            .map_err(ModexError::from);
+
+        let events = UnboundedReceiverStream::new(rx).map(Ok).try_for_each(
+            async |globals::FenceEvent { procs, .. }| {
+                let peers = discovery
+                    .peers(&procs, Endpoint::Fence)
+                    .await
+                    .map_err(ModexError::Peer)?;
+                stream::iter(peers)
+                    .map(Ok)
+                    .try_for_each(async |peer| {
+                        let s = connect_peer(&peer).await?;
+                        drop(s); // Drop without writing any data to trigger an error
+                        Ok(())
+                    })
+                    .await
+            },
+        );
+
+        let result = async move {
+            select(pin!(l), pin!(events))
+                .map(|result| result.factor_first().0)
+                .await
+        };
+
+        (result, tx)
     }
 
     #[tokio::test]
@@ -477,15 +507,19 @@ mod test {
         let tmpdir = TempDir::new("fence-test").unwrap();
         let discovery = DirectoryPeers::new(tmpdir.path(), 1, 2);
         let (fence, tx) = create_fence(&discovery).await;
-        let bad_fence = create_bad_fence(&discovery).await;
-        let (event, rx) = create_event(
-            vec![sys::pmix_proc_t {
-                rank: sys::PMIX_RANK_WILDCARD,
-                nspace: [0; _],
-            }],
-            CData::from_slice(&[1]).unwrap(),
-        );
+        let (bad_fence, bad_tx) = create_bad_fence(&discovery).await;
+        let procs = vec![sys::pmix_proc_t {
+            rank: sys::PMIX_RANK_WILDCARD,
+            nspace: [0; _],
+        }];
+        let (event, rx) = create_event(procs.clone(), globals::CData::from_slice(&[1]).unwrap());
         tx.send(event).unwrap();
+        let event = globals::FenceEvent {
+            procs,
+            data: globals::CData::from_slice(&[2]).unwrap(),
+            cb: globals::ModexCallback::empty(),
+        };
+        bad_tx.send(event).unwrap();
 
         let (result, Either::Left((exit, _))) =
             join(rx, select(pin!(fence), pin!(bad_fence))).await

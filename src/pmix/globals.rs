@@ -37,7 +37,11 @@ impl ModexCallback {
     }
 
     #[cfg(test)]
-    #[allow(clippy::type_complexity)]
+    pub fn empty() -> Self {
+        Self(None, ptr::null_mut())
+    }
+
+    #[cfg(test)]
     pub fn test_callback(cb: Box<TestCb>) -> Self {
         let cb = Box::new(cb);
         Self(Some(test_cbfunc), Box::into_raw(cb) as *mut ffi::c_void)
