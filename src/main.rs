@@ -8,7 +8,11 @@ use tempdir::TempDir;
 
 use anyhow::Error;
 use clap::Parser;
-use tokio::{fs, process::Command};
+use tokio::{
+    fs,
+    process::Command,
+    signal::unix::{SignalKind, signal},
+};
 
 use pmi_k8s::{
     Cli,
@@ -70,7 +74,11 @@ async fn main() -> Result<(), Error> {
                 .try_collect::<Vec<_>>(),
         )
     } else {
-        Either::Right(future::pending())
+        let mut sigterm = signal(SignalKind::terminate())?;
+        Either::Right(pin!(async move {
+            sigterm.recv().await;
+            Ok(Vec::new())
+        }))
     };
 
     let rcs = match future::select(rcs, run).await {
