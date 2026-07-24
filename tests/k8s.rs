@@ -3,7 +3,7 @@
 use std::{
     env,
     path::Path,
-    process::{Command, ExitStatus},
+    process::{Command, ExitStatus, Stdio},
     time::Duration,
 };
 
@@ -38,7 +38,8 @@ pub fn patch_kubeconfig_for_docker(config: kube::Config) -> kube::Config {
 
 fn kubectl_cmd(config: &kube::Config) -> Command {
     let mut cmd = Command::new("kubectl");
-    cmd.args(["--server", &config.cluster_url.to_string()]);
+    cmd.args(["--server", &config.cluster_url.to_string()])
+        .stdout(Stdio::null());
     if let Some(tls_server_name) = &config.tls_server_name {
         cmd.args(["--tls-server-name", tls_server_name]);
     }
@@ -96,4 +97,14 @@ async fn test_modex() {
     let _k = Kustomization::new(&config, &path);
 
     assert!(wait_for_complete(&config, "pmi-k8s-test-dmodex", Duration::from_mins(1)).success())
+}
+
+#[tokio::test]
+async fn test_sidecar() {
+    let config = patch_kubeconfig_for_docker(Config::infer().await.unwrap());
+    let path =
+        Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap()).join("tests/kustomization/sidecar");
+    let _k = Kustomization::new(&config, &path);
+
+    assert!(wait_for_complete(&config, "pmi-k8s-test-sidecar", Duration::from_mins(1)).success())
 }
