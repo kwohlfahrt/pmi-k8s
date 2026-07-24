@@ -1,0 +1,7 @@
+nameSuffix: -sidecar
+
+resources:
+  - ../base
+
+patches:
+  - path: ./job.yaml
