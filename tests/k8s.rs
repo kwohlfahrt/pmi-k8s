@@ -38,8 +38,7 @@ pub fn patch_kubeconfig_for_docker(config: kube::Config) -> kube::Config {
 
 fn kubectl_cmd(config: &kube::Config) -> Command {
     let mut cmd = Command::new("kubectl");
-    cmd.args(["--server", &config.cluster_url.to_string()])
-        .stdout(Stdio::null());
+    cmd.args(["--server", &config.cluster_url.to_string()]);
     if let Some(tls_server_name) = &config.tls_server_name {
         cmd.args(["--tls-server-name", tls_server_name]);
     }
@@ -55,6 +54,7 @@ impl<'a> Kustomization<'a> {
     fn new(config: &'a Config, path: &'a Path) -> Self {
         kubectl_cmd(config)
             .args(["apply", "-k", path.to_str().unwrap()])
+            .stdout(Stdio::null())
             .status()
             .unwrap();
 
@@ -66,6 +66,7 @@ impl<'a> Drop for Kustomization<'a> {
     fn drop(&mut self) {
         kubectl_cmd(self.config)
             .args(["delete", "-k", self.path.to_str().unwrap()])
+            .stdout(Stdio::null())
             .status()
             .unwrap();
     }
@@ -75,6 +76,15 @@ fn wait_for_complete(config: &Config, name: &str, timeout: Duration) -> ExitStat
     kubectl_cmd(config)
         .args(["wait", "--for", "condition=Complete"])
         .arg(format!("--timeout={}s", timeout.as_secs()))
+        .arg(format!("jobs.batch/{}", name))
+        .stdout(Stdio::null())
+        .status()
+        .unwrap()
+}
+
+fn logs(config: &Config, name: &str) -> ExitStatus {
+    kubectl_cmd(config)
+        .args(["logs", "--all-pods", "--all-containers"])
         .arg(format!("jobs.batch/{}", name))
         .status()
         .unwrap()
@@ -86,7 +96,11 @@ async fn test_fence() {
     let path = Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap()).join("tests/kustomization/base");
     let _k = Kustomization::new(&config, &path);
 
-    assert!(wait_for_complete(&config, "pmi-k8s-test", Duration::from_mins(1)).success())
+    let timeout = Duration::from_mins(1);
+    if !wait_for_complete(&config, "pmi-k8s-test", timeout).success() {
+        logs(&config, "pmi-k8s-test");
+        panic!("expected job to complete within {:?}", timeout)
+    }
 }
 
 #[tokio::test]
@@ -96,7 +110,11 @@ async fn test_modex() {
         Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap()).join("tests/kustomization/dmodex");
     let _k = Kustomization::new(&config, &path);
 
-    assert!(wait_for_complete(&config, "pmi-k8s-test-dmodex", Duration::from_mins(1)).success())
+    let timeout = Duration::from_mins(1);
+    if !wait_for_complete(&config, "pmi-k8s-test-dmodex", timeout).success() {
+        logs(&config, "pmi-k8s-test-dmodex");
+        panic!("expected job to complete within {:?}", timeout)
+    }
 }
 
 #[tokio::test]
@@ -106,5 +124,9 @@ async fn test_sidecar() {
         Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap()).join("tests/kustomization/sidecar");
     let _k = Kustomization::new(&config, &path);
 
-    assert!(wait_for_complete(&config, "pmi-k8s-test-sidecar", Duration::from_mins(1)).success())
+    let timeout = Duration::from_secs(10);
+    if !wait_for_complete(&config, "pmi-k8s-test-sidecar", timeout).success() {
+        logs(&config, "pmi-k8s-test-sidecar");
+        panic!("expected job to complete within {:?}", timeout)
+    }
 }

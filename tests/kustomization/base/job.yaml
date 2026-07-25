@@ -6,7 +6,7 @@ spec:
   completions: 2
   parallelism: 2
   completionMode: Indexed
-  activeDeadlineSeconds: 60
+  activeDeadlineSeconds: 120
   backoffLimit: 1
   template:
     spec:

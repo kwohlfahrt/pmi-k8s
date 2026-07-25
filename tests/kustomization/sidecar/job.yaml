@@ -37,8 +37,6 @@ spec:
             - |
               pids=()
               for f in /mnt/env/*.env; do
-                  echo ================
-                  cat $f
                   ( set -a; source "$f"; set +a; exec ./main.py 4 ) &
                   pids+=($!)
               done
