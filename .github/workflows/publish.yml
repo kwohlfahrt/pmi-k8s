@@ -36,8 +36,9 @@ jobs:
       # Build final image, which is a dependency of the test image
       - uses: docker/build-push-action@v6
         with:
-          push: true
-          tags: localhost:5000/pmi-k8s
+          outputs: |
+            type=docker,name=pmi-k8s:latest
+            type=registry,name=localhost:5000/pmi-k8s:latest,push=true
           platforms: linux/${{ matrix.arch }}
           cache-from: type=gha,scope=${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
@@ -56,7 +57,7 @@ jobs:
           export DOCKER_ADDR=$(ip --json addr show docker0 | yq -r '.[].addr_info[] | select(.family == "inet").local')
           yq --inplace '.networking.apiServerAddress = strenv(DOCKER_ADDR)' ./tests/cluster.yaml
           kind create cluster --config=./tests/cluster.yaml --kubeconfig=./kubeconfig.yaml
-          kind load docker-image pmi-k8s-mpi:test
+          kind load docker-image pmi-k8s-mpi:test pmi-k8s:latest
       - run: |
           docker run --rm -i \
             --env KUBECONFIG=/app/pmi-k8s/kubeconfig.yaml \
