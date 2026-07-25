@@ -1,4 +1,4 @@
-use std::{error::Error, fmt, io};
+use std::{error::Error, fmt, io, path::PathBuf};
 
 use clap::Parser;
 
@@ -22,8 +22,10 @@ pub enum ModexError<E: Error + fmt::Debug> {
 pub struct Cli {
     #[arg(long)]
     pub nproc: u16,
+    #[arg(long)]
+    pub env_dir: Option<PathBuf>,
     #[arg()]
-    pub command: String,
+    pub command: Option<String>,
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub args: Vec<String>,
 }
@@ -35,22 +37,31 @@ mod test {
 
     #[test]
     fn test_args() {
-        assert!(Cli::try_parse_from(["pmi-k8s", "--nproc=2"]).is_err());
         let cli = Cli::try_parse_from(["pmi-k8s", "--nproc=2", "foo"]).unwrap();
         assert_eq!(cli.nproc, 2);
-        assert_eq!(cli.command, "foo");
+        assert_eq!(cli.command, "foo".to_owned().into());
         assert!(cli.args.is_empty());
 
         let cli =
             Cli::try_parse_from(["pmi-k8s", "--nproc=2", "foo", "--", "bar", "--baz"]).unwrap();
         assert_eq!(cli.nproc, 2);
-        assert_eq!(cli.command, "foo");
+        assert_eq!(cli.command, "foo".to_owned().into());
         assert_eq!(cli.args, ["bar", "--baz"]);
 
         let cli =
             Cli::try_parse_from(["pmi-k8s", "--nproc=2", "--", "foo", "bar", "--baz"]).unwrap();
         assert_eq!(cli.nproc, 2);
-        assert_eq!(cli.command, "foo");
+        assert_eq!(cli.command, "foo".to_owned().into());
         assert_eq!(cli.args, ["bar", "--baz"]);
+
+        let cli = Cli::try_parse_from(["pmi-k8s", "--nproc=2", "--", "foo"]).unwrap();
+        assert_eq!(cli.nproc, 2);
+        assert_eq!(cli.command, "foo".to_owned().into());
+        assert!(cli.args.is_empty());
+
+        let cli = Cli::try_parse_from(["pmi-k8s", "--nproc=2", "--env-dir=./foo-env"]).unwrap();
+        assert_eq!(cli.nproc, 2);
+        assert_eq!(cli.command, None);
+        assert!(cli.args.is_empty());
     }
 }

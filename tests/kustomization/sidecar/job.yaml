@@ -1,0 +1,56 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pmi-k8s-test
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: pmi-k8s
+          image: pmi-k8s:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - --nproc=2
+            - --env-dir=/mnt/env
+          env:
+            - name: TMPDIR
+              value: /mnt/temp
+            - name: JOB_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.labels['batch.kubernetes.io/job-name']
+          volumeMounts:
+            - name: env
+              mountPath: /mnt/env
+            - name: temp
+              mountPath: /mnt/temp
+          readinessProbe:
+            exec:
+              command: ["stat", "/mnt/env/ready"]
+          restartPolicy: Always
+      containers:
+        - name: test
+          # We don't want to launch via pmi-k8s
+          command: [bash, "-c"]
+          args:
+            - |
+              pids=()
+              for f in /mnt/env/*.env; do
+                  ( set -a; source "$f"; set +a; exec ./main.py 4 ) &
+                  pids+=($!)
+              done
+
+              for pid in "${pids[@]}"; do
+                  wait "$pid" || exit $?
+              done
+          volumeMounts:
+            - name: env
+              mountPath: /mnt/env
+            - name: temp
+              mountPath: /mnt/temp
+      volumes:
+        - name: env
+          emptyDir: {}
+        - name: temp
+          emptyDir: {}

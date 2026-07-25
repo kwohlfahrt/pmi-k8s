@@ -11,6 +11,13 @@ server using the [OpenPMIx reference library][OpenPMIx].
 
 ## Usage
 
+`pmi-k8s` can be used in two ways - as a direct job launcher, or as a sidecar
+for a container containing an unmodified MPI program.
+
+See the `tests/` directory for complete, tested examples.
+
+### Direct Launch
+
 The `pmi-k8s` binary must be included in your container image, where
 `my-mpi-base` is the image containing your MPI program:
 
@@ -52,6 +59,86 @@ spec:
       restartPolicy: Never
 ```
 
-See the `tests/` directory for a complete, tested example.
+### Sidecar
+
+In sidecar mode, the main job image does not need to be modified, but the job
+spec is slightly more complex:
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pmi-k8s-test-sidecar
+spec:
+  activeDeadlineSeconds: 60
+  backoffLimit: 1
+  completionMode: Indexed
+  completions: 2
+  parallelism: 2
+  template:
+    spec:
+      containers:
+      - args:
+        - |
+          pids=()
+          for f in /mnt/env/*.env; do
+              echo ================
+              cat $f
+              ( set -a; source "$f"; set +a; exec ./main.py 4 ) &
+              pids+=($!)
+          done
+
+          for pid in "${pids[@]}"; do
+              wait "$pid" || exit $?
+          done
+        command:
+        - bash
+        - -c
+        env:
+        - name: JOB_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.labels['batch.kubernetes.io/job-name']
+        image: pmi-k8s-mpi:test
+        imagePullPolicy: IfNotPresent
+        name: test
+        volumeMounts:
+        - mountPath: /mnt/env
+          name: env
+        - mountPath: /mnt/temp
+          name: temp
+      initContainers:
+      - args:
+        - --nproc=2
+        - --env-dir=/mnt/env
+        env:
+        - name: TMPDIR
+          value: /mnt/temp
+        image: pmi-k8s:latest
+        imagePullPolicy: IfNotPresent
+        name: pmi-k8s
+        readinessProbe:
+          exec:
+            command:
+            - stat
+            - /mnt/env/ready
+        restartPolicy: Always
+        volumeMounts:
+        - mountPath: /mnt/env
+          name: env
+        - mountPath: /mnt/temp
+          name: temp
+      restartPolicy: Never
+      serviceAccountName: pmi-k8s-test-sidecar
+      volumes:
+      - emptyDir: {}
+        name: env
+      - emptyDir: {}
+        name: temp
+```
+
+The key is that `pmi-k8s` and the main container share a temporary directory,
+and the main container imports the environment written by `pmi-k8s`.
 
 [OpenPMIx]: https://github.com/openpmix/openpmix

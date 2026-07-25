@@ -88,4 +88,10 @@ RUN --mount=type=cache,target=/workspaces/pmi-k8s/target \
 
 FROM fedora:43
 
+RUN --mount=type=cache,target=/var/cache/libdnf5 \
+    dnf install --setopt=install_weak_deps=False -y hwloc
+
+COPY --link --from=ompi /usr/local /usr/local
 COPY --link --from=build /usr/local/bin/pmi-k8s /usr/local/bin/pmi-k8s
+
+ENTRYPOINT [ "/usr/local/bin/pmi-k8s" ]
