@@ -1,6 +1,9 @@
-use std::ffi::{CStr, c_void};
+use std::ffi::{self, CStr, c_void};
 use std::fmt::Display;
+use std::marker::PhantomData;
 use std::mem::MaybeUninit;
+
+use thiserror::Error;
 
 use super::sys;
 
@@ -43,17 +46,113 @@ impl Drop for sys::pmix_info_t {
     }
 }
 
-impl From<&CStr> for sys::pmix_value_t {
-    fn from(src: &CStr) -> Self {
-        let tag = sys::PMIX_STRING as u16;
-        let mut v = MaybeUninit::<Self>::uninit();
+/// Connects a Rust type to its PMIx data-type tag.
+///
+/// # Safety
+/// `TAG` must denote the `pmix_data_type_t` that corresponds to the Rust type,
+/// and `load` and `store` must access the corresponding union member.
+pub unsafe trait Tagged {
+    const TAG: sys::pmix_data_type_t;
+
+    fn store(&self, dst: &mut MaybeUninit<sys::pmix_value_t>) -> PmixStatus;
+    /// # Safety: caller must ensure `src.type_ == Self::TAG`.
+    unsafe fn load(src: &sys::pmix_value_t) -> &Self;
+}
+
+#[repr(transparent)]
+pub struct Value<T>(sys::pmix_value_t, PhantomData<T>);
+
+impl<T: Tagged> Value<T> {
+    pub fn get(&self) -> &T {
+        // SAFETY: tag is enforced during construction of Value<T>
+        unsafe { T::load(&self.0) }
+    }
+}
+
+impl<T: Tagged> From<&T> for Value<T> {
+    fn from(value: &T) -> Self {
+        let mut v = MaybeUninit::<sys::pmix_value_t>::uninit();
+        let r = value.store(&mut v);
+        assert!(r.check().is_ok());
+        // SAFETY: initialized with `value.store`, and return code checked
+        let v = unsafe { v.assume_init() };
+        Self(v, PhantomData)
+    }
+}
+
+#[derive(Debug, Error)]
+#[error("expected type tag {expected} got: {actual}")]
+pub struct TagMismatch {
+    expected: sys::pmix_data_type_t,
+    actual: sys::pmix_data_type_t,
+}
+
+impl<T: Tagged> TryFrom<sys::pmix_value_t> for Value<T> {
+    type Error = TagMismatch;
+
+    fn try_from(value: sys::pmix_value_t) -> Result<Self, Self::Error> {
+        if value.type_ == T::TAG {
+            Ok(Self(value, PhantomData))
+        } else {
+            Err(TagMismatch {
+                expected: T::TAG,
+                actual: value.type_,
+            })
+        }
+    }
+}
+
+macro_rules! pmix_tagged_from {
+    ($T:ty, $variant:ident, $tag:ident) => {
+        // SAFETY: Macro invoked with the correct type/variant/tag
+        unsafe impl Tagged for $T {
+            const TAG: sys::pmix_data_type_t = sys::$tag as sys::pmix_data_type_t;
+
+            fn store(&self, dst: &mut MaybeUninit<sys::pmix_value_t>) -> PmixStatus {
+                // SAFETY: `data` is the correct type for tag, and is copied
+                PmixStatus(unsafe {
+                    sys::PMIx_Value_load(
+                        dst.as_mut_ptr(),
+                        self as *const $T as *const c_void,
+                        Self::TAG,
+                    )
+                })
+            }
+
+            unsafe fn load(src: &sys::pmix_value_t) -> &Self {
+                // SAFETY: Type invariant is that we have the correct tag
+                unsafe { &src.data.$variant }
+            }
+        }
+    };
+}
+
+pmix_tagged_from!(u32, uint32, PMIX_UINT32);
+
+// SAFETY: Tag is correct for C-strings, and we access data.string
+unsafe impl Tagged for ffi::CStr {
+    const TAG: sys::pmix_data_type_t = sys::PMIX_STRING as sys::pmix_data_type_t;
+
+    fn store(&self, dst: &mut MaybeUninit<sys::pmix_value_t>) -> PmixStatus {
         // SAFETY: `data` is the correct type for tag, and is copied
-        let status = unsafe {
-            sys::PMIx_Value_load(v.as_mut_ptr(), src as *const CStr as *const c_void, tag)
-        };
-        assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
-        // SAFETY: v was initialized by PMIx_Value_load
-        unsafe { v.assume_init() }
+        PmixStatus(unsafe {
+            sys::PMIx_Value_load(
+                dst.as_mut_ptr(),
+                self as *const CStr as *const c_void,
+                Self::TAG,
+            )
+        })
+    }
+
+    unsafe fn load(src: &sys::pmix_value_t) -> &Self {
+        // SAFETY: Type invariant is that we have the correct tag
+        let string = unsafe { src.data.string };
+        if string.is_null() {
+            c""
+        } else {
+            // SAFETY: We've checked NULL, and PMIx stores a C string here.
+            unsafe { CStr::from_ptr(string) }
+        }
     }
 }
 
