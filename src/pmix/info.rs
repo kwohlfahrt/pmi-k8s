@@ -2,7 +2,7 @@ use std::ffi::{CStr, c_void};
 use std::mem::MaybeUninit;
 
 use super::sys;
-use super::value::{self, PmixStatus, Tagged};
+use super::value::{self, PmixStatus, PmixStr, Tagged};
 
 /// # SAFETY
 /// `KEY` must be the correct PMIx info key for the `Value` type.
@@ -53,9 +53,9 @@ pmix_info_key_from!(Rank, value::Rank, sys::PMIX_RANK);
 pmix_info_key_from!(LocalRank, u16, sys::PMIX_LOCAL_RANK);
 pmix_info_key_from!(NodeId, u32, sys::PMIX_NODEID);
 pmix_info_key_from!(UniverseSize, u32, sys::PMIX_UNIV_SIZE);
-pmix_info_key_from!(Hostname, CStr, sys::PMIX_HOSTNAME);
-pmix_info_key_from!(NodeMap, CStr, sys::PMIX_NODE_MAP);
-pmix_info_key_from!(ProcMap, CStr, sys::PMIX_PROC_MAP);
-pmix_info_key_from!(ServerTmpdir, CStr, sys::PMIX_SERVER_TMPDIR);
-pmix_info_key_from!(SystemTmpdir, CStr, sys::PMIX_SYSTEM_TMPDIR);
+pmix_info_key_from!(Hostname, PmixStr, sys::PMIX_HOSTNAME);
+pmix_info_key_from!(NodeMap, PmixStr, sys::PMIX_NODE_MAP);
+pmix_info_key_from!(ProcMap, PmixStr, sys::PMIX_PROC_MAP);
+pmix_info_key_from!(ServerTmpdir, PmixStr, sys::PMIX_SERVER_TMPDIR);
+pmix_info_key_from!(SystemTmpdir, PmixStr, sys::PMIX_SYSTEM_TMPDIR);
 pmix_info_key_from!(ServerSystemSupport, bool, sys::PMIX_SERVER_SYSTEM_SUPPORT);

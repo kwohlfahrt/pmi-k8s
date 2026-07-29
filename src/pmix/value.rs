@@ -1,4 +1,5 @@
-use std::ffi::{self, CStr, c_void};
+use core::slice;
+use std::ffi;
 use std::fmt::Display;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
@@ -51,12 +52,18 @@ impl Drop for sys::pmix_info_t {
 /// # Safety
 /// `TAG` must denote the `pmix_data_type_t` that corresponds to the Rust type,
 /// and `load` and `store` must access the corresponding union member.
+/// Types implementing `Tagged` must have the same representation as the data
+/// array element representation.
 pub unsafe trait Tagged {
     const TAG: sys::pmix_data_type_t;
 
-    fn store(&self, dst: &mut MaybeUninit<sys::pmix_value_t>) -> PmixStatus;
+    fn store(&self, dst: &mut MaybeUninit<sys::pmix_value_t>) -> Result<(), PmixError>;
     /// # Safety: caller must ensure `src.type_ == Self::TAG`.
     unsafe fn load(src: &sys::pmix_value_t) -> &Self;
+
+    fn tag_matches(src: &sys::pmix_value_t) -> bool {
+        src.type_ == Self::TAG
+    }
 }
 
 #[repr(transparent)]
@@ -73,7 +80,7 @@ impl<T: Tagged> From<&T> for Value<T> {
     fn from(value: &T) -> Self {
         let mut v = MaybeUninit::<sys::pmix_value_t>::uninit();
         let r = value.store(&mut v);
-        assert!(r.check().is_ok());
+        assert!(r.is_ok());
         // SAFETY: initialized with `value.store`, and return code checked
         let v = unsafe { v.assume_init() };
         Self(v, PhantomData)
@@ -91,7 +98,7 @@ impl<T: Tagged> TryFrom<sys::pmix_value_t> for Value<T> {
     type Error = TagMismatch;
 
     fn try_from(value: sys::pmix_value_t) -> Result<Self, Self::Error> {
-        if value.type_ == T::TAG {
+        if T::tag_matches(&value) {
             Ok(Self(value, PhantomData))
         } else {
             Err(TagMismatch {
@@ -106,17 +113,18 @@ macro_rules! pmix_tagged_from {
     ($T:ty, $variant:ident, $tag:expr) => {
         // SAFETY: Macro invoked with the correct type/variant/tag
         unsafe impl Tagged for $T {
-            const TAG: sys::pmix_data_type_t = $tag as sys::pmix_data_type_t;
+            const TAG: sys::pmix_data_type_t = $tag as _;
 
-            fn store(&self, dst: &mut MaybeUninit<sys::pmix_value_t>) -> PmixStatus {
+            fn store(&self, dst: &mut MaybeUninit<sys::pmix_value_t>) -> Result<(), PmixError> {
                 // SAFETY: `data` is the correct type for tag, and is copied
                 PmixStatus(unsafe {
                     sys::PMIx_Value_load(
                         dst.as_mut_ptr(),
-                        self as *const $T as *const c_void,
+                        self as *const $T as *const ffi::c_void,
                         Self::TAG,
                     )
                 })
+                .check()
             }
 
             unsafe fn load(src: &sys::pmix_value_t) -> &Self {
@@ -134,17 +142,18 @@ macro_rules! pmix_tagged_from_newtype {
 
         // SAFETY: Macro invoked with the correct type/variant/tag
         unsafe impl Tagged for $N {
-            const TAG: sys::pmix_data_type_t = $tag as sys::pmix_data_type_t;
+            const TAG: sys::pmix_data_type_t = $tag as _;
 
-            fn store(&self, dst: &mut MaybeUninit<sys::pmix_value_t>) -> PmixStatus {
+            fn store(&self, dst: &mut MaybeUninit<sys::pmix_value_t>) -> Result<(), PmixError> {
                 // SAFETY: `data` is the correct type for tag, and is copied
                 PmixStatus(unsafe {
                     sys::PMIx_Value_load(
                         dst.as_mut_ptr(),
-                        self as *const $N as *const c_void,
+                        self as *const $N as *const ffi::c_void,
                         Self::TAG,
                     )
                 })
+                .check()
             }
 
             unsafe fn load(src: &sys::pmix_value_t) -> &Self {
@@ -163,65 +172,112 @@ pmix_tagged_from!(u16, uint16, sys::PMIX_UINT16);
 pmix_tagged_from!(u32, uint32, sys::PMIX_UINT32);
 pmix_tagged_from_newtype!(sys::pmix_rank_t, Rank, rank, sys::PMIX_PROC_RANK);
 
-// SAFETY: Tag is correct for C-strings, and we access data.string
-unsafe impl Tagged for ffi::CStr {
-    const TAG: sys::pmix_data_type_t = sys::PMIX_STRING as sys::pmix_data_type_t;
+#[repr(transparent)]
+pub struct PmixStr(*const ffi::c_char);
 
-    fn store(&self, dst: &mut MaybeUninit<sys::pmix_value_t>) -> PmixStatus {
-        // SAFETY: `data` is the correct type for tag, and is copied
-        PmixStatus(unsafe {
-            sys::PMIx_Value_load(
-                dst.as_mut_ptr(),
-                self as *const CStr as *const c_void,
-                Self::TAG,
-            )
-        })
-    }
-
-    unsafe fn load(src: &sys::pmix_value_t) -> &Self {
-        // SAFETY: Type invariant is that we have the correct tag
-        let string = unsafe { src.data.string };
-        if string.is_null() {
+impl From<&PmixStr> for &ffi::CStr {
+    fn from(value: &PmixStr) -> Self {
+        if value.0.is_null() {
             c""
         } else {
-            // SAFETY: We've checked NULL, and PMIx stores a C string here.
-            unsafe { CStr::from_ptr(string) }
+            unsafe { ffi::CStr::from_ptr(value.0) }
         }
     }
 }
 
-impl From<&[sys::pmix_value_t]> for sys::pmix_value_t {
-    fn from(src: &[sys::pmix_value_t]) -> Self {
-        let tag = sys::PMIX_DATA_ARRAY as u16;
-        let array = sys::pmix_data_array_t {
-            type_: sys::PMIX_VALUE as u16,
-            size: src.len(),
-            array: src.as_ptr() as *mut c_void,
-        };
-
-        let mut v = MaybeUninit::<Self>::uninit();
-        // SAFETY: `data` is the correct type for tag, and is copied
-        let status = unsafe {
-            sys::PMIx_Value_load(
-                v.as_mut_ptr(),
-                &array as *const sys::pmix_data_array_t as *const c_void,
-                tag,
-            )
-        };
-        assert_eq!(status, sys::PMIX_SUCCESS as sys::pmix_status_t);
-        // SAFETY: v was initialized by PMIx_Value_load
-        unsafe { v.assume_init() }
+impl From<&ffi::CStr> for &PmixStr {
+    fn from(value: &ffi::CStr) -> Self {
+        let p = value.as_ptr().cast::<PmixStr>();
+        unsafe { &*p }
     }
 }
 
-impl From<(&CStr, &[sys::pmix_info_t])> for sys::pmix_info_t {
-    fn from((key, src): (&CStr, &[sys::pmix_info_t])) -> Self {
+// SAFETY: Tag is correct for C-strings, and we access data.string
+unsafe impl Tagged for PmixStr {
+    const TAG: sys::pmix_data_type_t = sys::PMIX_STRING as _;
+
+    fn store(&self, dst: &mut MaybeUninit<sys::pmix_value_t>) -> Result<(), PmixError> {
+        // SAFETY: `data` is the correct type for tag, and is copied
+        PmixStatus(unsafe {
+            sys::PMIx_Value_load(dst.as_mut_ptr(), self.0 as *const ffi::c_void, Self::TAG)
+        })
+        .check()
+    }
+
+    unsafe fn load(src: &sys::pmix_value_t) -> &Self {
+        // SAFETY: Type invariant is that we have the correct tag
+        let string = unsafe { src.data.string }.cast::<PmixStr>();
+        // SAFETY: PmixStr is #[repr(transparent)]
+        unsafe { &*string }
+    }
+}
+
+// SAFETY: Tag is correct for the top-level array, and recursively for inner data
+unsafe impl<T: Tagged> Tagged for [T] {
+    const TAG: sys::pmix_data_type_t = sys::PMIX_DATA_ARRAY as _;
+
+    fn store(&self, dst: &mut MaybeUninit<sys::pmix_value_t>) -> Result<(), PmixError> {
+        let array = sys::pmix_data_array_t {
+            type_: T::TAG,
+            size: self.len(),
+            array: self.as_ptr() as *mut ffi::c_void,
+        };
+
+        let dst_p = dst.as_mut_ptr();
+
+        // SAFETY: PMIx_Value_load dispatches based on the array type_ tag.
+        PmixStatus(unsafe {
+            sys::PMIx_Value_load(
+                dst_p,
+                &array as *const sys::pmix_data_array_t as *const ffi::c_void,
+                Self::TAG,
+            )
+        })
+        .check()?;
+
+        // SAFETY: We've just constructed this variant
+        let array = unsafe { dst_p.as_ref_unchecked().data.darray };
+        if !self.is_empty() && array.is_null() {
+            Err(PmixError(sys::PMIX_ERROR))
+        } else {
+            Ok(())
+        }
+    }
+
+    unsafe fn load(src: &sys::pmix_value_t) -> &Self {
+        // SAFETY: Type invariant is that we have the correct tag
+        let array = unsafe { src.data.darray.as_ref() };
+
+        if let Some(array) = array
+            && !array.array.is_null()
+            && array.size > 0
+        {
+            // SAFETY: Type invariant is that the tag is (recursively) correct
+            unsafe { slice::from_raw_parts(array.array as *mut T, array.size) }
+        } else {
+            &[]
+        }
+    }
+
+    fn tag_matches(src: &sys::pmix_value_t) -> bool {
+        if src.type_ == Self::TAG {
+            // SAFETY: Type invariant is that we have the correct tag
+            let array = unsafe { src.data.darray.as_ref() };
+            array.is_none_or(|a| a.type_ == T::TAG)
+        } else {
+            false
+        }
+    }
+}
+
+impl From<(&ffi::CStr, &[sys::pmix_info_t])> for sys::pmix_info_t {
+    fn from((key, src): (&ffi::CStr, &[sys::pmix_info_t])) -> Self {
         let tag = sys::PMIX_DATA_ARRAY as u16;
         let key = key.as_ptr();
         let array = sys::pmix_data_array_t {
             type_: sys::PMIX_INFO as u16,
             size: src.len(),
-            array: src.as_ptr() as *mut c_void,
+            array: src.as_ptr() as *mut ffi::c_void,
         };
 
         let mut v = MaybeUninit::<Self>::uninit();
@@ -232,7 +288,7 @@ impl From<(&CStr, &[sys::pmix_info_t])> for sys::pmix_info_t {
             sys::PMIx_Info_load(
                 v.as_mut_ptr(),
                 key,
-                &array as *const sys::pmix_data_array_t as *const c_void,
+                &array as *const sys::pmix_data_array_t as *const ffi::c_void,
                 tag,
             )
         };

@@ -44,8 +44,8 @@ impl<'a> Server<'a> {
         #[allow(clippy::unwrap_used, reason = "File paths cannot contain NULL bytes")]
         let dirname = ffi::CString::new(dirname.as_os_str().as_encoded_bytes()).unwrap();
         let infos: [sys::pmix_info_t; _] = [
-            info::ServerTmpdir::info(dirname.as_c_str()),
-            info::SystemTmpdir::info(dirname.as_c_str()),
+            info::ServerTmpdir::info(dirname.as_c_str().into()),
+            info::SystemTmpdir::info(dirname.as_c_str().into()),
             info::ServerSystemSupport::info(&true),
         ];
         let mut module = globals::server_module();
@@ -114,9 +114,9 @@ impl<'a> Namespace<'a> {
         let node_infos = hostnames
             .iter()
             .enumerate()
-            .map(|(node_rank, hostname)| {
+            .map(|(node_rank, &hostname)| {
                 [
-                    info::Hostname::info(hostname),
+                    info::Hostname::info(hostname.into()),
                     info::NodeId::info(&(node_rank as u32)),
                 ]
             })
