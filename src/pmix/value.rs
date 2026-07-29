@@ -127,6 +127,7 @@ macro_rules! pmix_tagged_from {
     };
 }
 
+pmix_tagged_from!(bool, flag, PMIX_BOOL);
 pmix_tagged_from!(u32, uint32, PMIX_UINT32);
 
 // SAFETY: Tag is correct for C-strings, and we access data.string
@@ -155,6 +156,54 @@ unsafe impl Tagged for ffi::CStr {
         }
     }
 }
+
+/// # SAFETY
+/// `KEY` must be the correct PMIx info key for the `Value` type.
+pub unsafe trait Key {
+    const KEY: &CStr;
+
+    type Value: Tagged + ?Sized;
+
+    fn store(value: &Self::Value, dst: &mut MaybeUninit<sys::pmix_info_t>) -> PmixStatus {
+        // SAFETY: `data` is the correct type for `KEY`. The `tag` match is
+        // enforced by the `Tagged` impl on `value.`
+        PmixStatus(unsafe {
+            sys::PMIx_Info_load(
+                dst.as_mut_ptr(),
+                Self::KEY.as_ptr(),
+                value as *const Self::Value as *const c_void,
+                Self::Value::TAG,
+            )
+        })
+    }
+
+    fn info(value: &Self::Value) -> sys::pmix_info_t {
+        let mut v = MaybeUninit::<sys::pmix_info_t>::uninit();
+        let r = Self::store(value, &mut v);
+        assert!(r.check().is_ok());
+        // SAFETY: initialized with `K::store`, and return code checked
+        unsafe { v.assume_init() }
+    }
+}
+
+macro_rules! pmix_info_key_from {
+    ($S:ident, $T:ty, $tag:ident) => {
+        pub struct $S();
+        // SAFETY: Macro invoked with the correct type/tag
+        unsafe impl Key for $S {
+            const KEY: &CStr = sys::$tag;
+            type Value = $T;
+        }
+    };
+}
+
+pmix_info_key_from!(JobSize, u32, PMIX_JOB_SIZE);
+pmix_info_key_from!(UniverseSize, u32, PMIX_UNIV_SIZE);
+pmix_info_key_from!(NodeMap, CStr, PMIX_NODE_MAP);
+pmix_info_key_from!(ProcMap, CStr, PMIX_PROC_MAP);
+pmix_info_key_from!(ServerTmpdir, CStr, PMIX_SERVER_TMPDIR);
+pmix_info_key_from!(SystemTmpdir, CStr, PMIX_SYSTEM_TMPDIR);
+pmix_info_key_from!(ServerSystemSupport, bool, PMIX_SERVER_SYSTEM_SUPPORT);
 
 impl From<(&CStr, &CStr)> for sys::pmix_info_t {
     fn from((key, src): (&CStr, &CStr)) -> Self {
