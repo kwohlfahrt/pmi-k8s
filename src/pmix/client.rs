@@ -1,5 +1,7 @@
 use std::{ffi::CStr, mem::MaybeUninit, ptr};
 
+use super::info::{self, Key};
+
 use super::globals;
 use super::sys;
 use super::value::{PmixError, PmixStatus};
@@ -101,9 +103,9 @@ impl Client {
         key: &CStr,
     ) -> Result<sys::pmix_value_t, PmixError> {
         let mut infos = Vec::with_capacity(3);
-        infos.push((sys::PMIX_SESSION_INFO, true).into());
+        infos.push(info::SessionInfo::info(&true));
         if let Some(Session(id)) = session {
-            infos.push((sys::PMIX_SESSION_ID, id).into());
+            infos.push(info::SessionId::info(&id));
         }
 
         Self::get(None, infos, key)
@@ -111,9 +113,9 @@ impl Client {
 
     pub fn get_job(&self, job: Option<Job>, key: &CStr) -> Result<sys::pmix_value_t, PmixError> {
         let mut infos = Vec::with_capacity(3);
-        infos.push((sys::PMIX_JOB_INFO, true).into());
+        infos.push(info::JobInfo::info(&true));
         if let Some(Job(_, Some(Session(id)))) = job {
-            infos.push((sys::PMIX_SESSION_ID, id).into())
+            infos.push(info::SessionId::info(&id))
         }
 
         let proc = sys::pmix_proc_t {
@@ -127,7 +129,7 @@ impl Client {
     pub fn get_proc(&self, proc: Option<Proc>, key: &CStr) -> Result<sys::pmix_value_t, PmixError> {
         let mut infos = Vec::with_capacity(2);
         if let Some(Proc(_, Some(Job(_, Some(Session(id)))))) = proc {
-            infos.push((sys::PMIX_SESSION_ID, id).into())
+            infos.push(info::SessionId::info(&id))
         }
 
         let proc = sys::pmix_proc_t {
