@@ -1,4 +1,5 @@
 use core::slice;
+use std::ffi::CStr;
 use std::fmt::Display;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
@@ -51,17 +52,9 @@ pub trait DataPtr {
     fn as_ptr(&self) -> *const ffi::c_void;
 }
 
-impl<T> DataPtr for &T {
+impl<T: ?Sized> DataPtr for &T {
     fn as_ptr(&self) -> *const ffi::c_void {
         ptr::from_ref(*self).cast()
-    }
-}
-
-pub struct DirectPtr(*const ffi::c_void);
-
-impl DataPtr for DirectPtr {
-    fn as_ptr(&self) -> *const ffi::c_void {
-        self.0
     }
 }
 
@@ -190,42 +183,24 @@ pmix_tagged_from!(u16, uint16, sys::PMIX_UINT16);
 pmix_tagged_from!(u32, uint32, sys::PMIX_UINT32);
 pmix_tagged_from_newtype!(sys::pmix_rank_t, Rank, rank, sys::PMIX_PROC_RANK);
 
-#[repr(transparent)]
-pub struct PmixStr(*const ffi::c_char);
-
-impl From<&PmixStr> for &ffi::CStr {
-    fn from(value: &PmixStr) -> Self {
-        if value.0.is_null() {
-            c""
-        } else {
-            // SAFETY: We have a null-checked pointer to string
-            unsafe { ffi::CStr::from_ptr(value.0) }
-        }
-    }
-}
-
-impl From<&ffi::CStr> for &PmixStr {
-    fn from(value: &ffi::CStr) -> Self {
-        let p = value.as_ptr().cast::<PmixStr>();
-        // SAFETY: PmixStr is #[repr(transparent)]
-        unsafe { &*p }
-    }
-}
-
 // SAFETY: Tag is correct for C-strings, and we access data.string
-unsafe impl Tagged for PmixStr {
+unsafe impl Tagged for CStr {
     const TAG: sys::pmix_data_type_t = sys::PMIX_STRING as _;
 
-    type Data<'a> = DirectPtr;
+    type Data<'a> = &'a CStr;
     fn data(&self) -> Self::Data<'_> {
-        DirectPtr(self.0 as *const ffi::c_void)
+        self
     }
 
     unsafe fn load(src: &sys::pmix_value_t) -> &Self {
         // SAFETY: Type invariant is that we have the correct tag
-        let string = unsafe { src.data.string }.cast::<PmixStr>();
-        // SAFETY: PmixStr is #[repr(transparent)]
-        unsafe { &*string }
+        let ptr = unsafe { src.data.string };
+        if ptr.is_null() {
+            c""
+        } else {
+            // SAFETY: We've checked for NULL
+            unsafe { CStr::from_ptr(ptr) }
+        }
     }
 }
 
