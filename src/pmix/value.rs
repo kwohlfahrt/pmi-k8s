@@ -78,7 +78,8 @@ pub unsafe trait Tagged {
 
     fn data(&self) -> Self::Data<'_>;
 
-    /// # Safety: caller must ensure `src.type_ == Self::TAG`.
+    /// # Safety
+    /// Caller must ensure `src.type_ == Self::TAG`.
     unsafe fn load(src: &sys::pmix_value_t) -> &Self;
 
     fn tag_matches(src: &sys::pmix_value_t) -> Result<(), TagMismatch> {
@@ -100,6 +101,13 @@ impl<T: Tagged + ?Sized> Value<T> {
     pub fn get(&self) -> &T {
         // SAFETY: tag is enforced during construction of Value<T>
         unsafe { T::load(&self.0) }
+    }
+
+    /// # Safety
+    /// The value must have the correct tag for `T`, either statically known or
+    /// by checking `T::tag_matches(value)`.
+    pub unsafe fn load_unchecked(value: sys::pmix_value_t) -> Self {
+        Self(value, PhantomData)
     }
 }
 

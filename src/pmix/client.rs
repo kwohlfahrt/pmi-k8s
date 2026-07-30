@@ -1,5 +1,7 @@
 use std::{ffi::CStr, mem::MaybeUninit, ptr};
 
+use crate::pmix::value;
+
 use super::info::{self, Key};
 
 use super::globals;
@@ -60,11 +62,13 @@ impl Client {
         CStr::from_bytes_until_nul(namespace).unwrap()
     }
 
-    fn get(
+    fn get<K>(
         proc: Option<&sys::pmix_proc_t>,
         infos: Vec<sys::pmix_info_t>,
-        key: &CStr,
-    ) -> Result<sys::pmix_value_t, PmixError> {
+    ) -> Result<value::Value<K::Value>, PmixError>
+    where
+        K: info::Key<Value: Sized>,
+    {
         // We should use PMIX_GET_STATIC_VALUES, but this does not work. See
         // github.com/openpmix/openpmix#3782. Once this is resolved, the dance
         // to free `val_p` below is no longer necessary.
@@ -74,7 +78,7 @@ impl Client {
         PmixStatus(unsafe {
             sys::PMIx_Get(
                 proc.map_or(ptr::null(), |p| p),
-                key.as_ptr(),
+                K::KEY.as_ptr(),
                 infos.as_ptr(),
                 infos.len(),
                 val_p.as_mut_ptr(),
@@ -87,31 +91,39 @@ impl Client {
         // However, the value object we return also points to the same interior
         // data, so we set the type of `val_p` to `PMIX_UNDEF`, to move
         // ownership of the interior data to the returned `sys::pmix_value_t`.
-        unsafe {
+        let val = unsafe {
             let val_p = val_p.assume_init();
             let val = val_p.read();
 
             (*val_p).type_ = sys::PMIX_UNDEF as u16;
             sys::PMIx_Value_free(val_p, 1);
-            Ok(val)
-        }
+            val
+        };
+
+        // SAFETY: The key's corresponding value tyep is statically known.
+        Ok(unsafe { value::Value::<K::Value>::load_unchecked(val) })
     }
 
-    pub fn get_session(
+    pub fn get_session<K>(
         &self,
         session: Option<Session>,
-        key: &CStr,
-    ) -> Result<sys::pmix_value_t, PmixError> {
+    ) -> Result<value::Value<K::Value>, PmixError>
+    where
+        K: info::Key<Value: Sized>,
+    {
         let mut infos = Vec::with_capacity(3);
         infos.push(info::SessionInfo::info(&true));
         if let Some(Session(id)) = session {
             infos.push(info::SessionId::info(&id));
         }
 
-        Self::get(None, infos, key)
+        Self::get::<K>(None, infos)
     }
 
-    pub fn get_job(&self, job: Option<Job>, key: &CStr) -> Result<sys::pmix_value_t, PmixError> {
+    pub fn get_job<K>(&self, job: Option<Job>) -> Result<value::Value<K::Value>, PmixError>
+    where
+        K: info::Key<Value: Sized>,
+    {
         let mut infos = Vec::with_capacity(3);
         infos.push(info::JobInfo::info(&true));
         if let Some(Job(_, Some(Session(id)))) = job {
@@ -123,10 +135,13 @@ impl Client {
             rank: sys::PMIX_RANK_WILDCARD,
         };
 
-        Self::get(Some(&proc), infos, key)
+        Self::get::<K>(Some(&proc), infos)
     }
 
-    pub fn get_proc(&self, proc: Option<Proc>, key: &CStr) -> Result<sys::pmix_value_t, PmixError> {
+    pub fn get_proc<K>(&self, proc: Option<Proc>) -> Result<value::Value<K::Value>, PmixError>
+    where
+        K: info::Key<Value: Sized>,
+    {
         let mut infos = Vec::with_capacity(2);
         if let Some(Proc(_, Some(Job(_, Some(Session(id)))))) = proc {
             infos.push(info::SessionId::info(&id))
@@ -137,7 +152,7 @@ impl Client {
             rank: proc.map_or(self.proc.rank, |p| p.0),
         };
 
-        Self::get(Some(&proc), infos, key)
+        Self::get::<K>(Some(&proc), infos)
     }
 }
 

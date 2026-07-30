@@ -45,14 +45,10 @@ fn pmix() -> Result<(), Error> {
     assert!(pmix::is_initialized());
     let namespace = c.namespace().to_str().unwrap();
     assert!(!namespace.starts_with("singleton."));
-    let v = c.get_job(None, pmix::sys::PMIX_JOB_SIZE)?;
-    assert_eq!(pmix::sys::PMIX_UINT32 as u16, v.type_);
-    // SAFETY: We have checked that the type is uint32 above
-    assert_eq!(1, unsafe { v.data.uint32 });
+    let v = c.get_job::<pmix::info::JobSize>(None)?;
+    assert_eq!(v.get(), &1);
 
-    let v = c.get_proc(None, pmix::sys::PMIX_LOCAL_RANK)?;
-    assert_eq!(pmix::sys::PMIX_UINT16 as u16, v.type_);
-    // SAFETY: We have checked that the type is uint16 above
-    assert_eq!(0, unsafe { v.data.uint16 });
+    let v = c.get_proc::<pmix::info::LocalRank>(None)?;
+    assert_eq!(v.get(), &0);
     Ok(())
 }
