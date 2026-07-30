@@ -111,29 +111,23 @@ impl<'a> Namespace<'a> {
 
         let nnodes = hostnames.len() as u32;
 
-        let node_infos = hostnames
-            .iter()
-            .enumerate()
-            .map(|(node_rank, &hostname)| {
-                [
-                    info::Hostname::info(hostname.into()),
-                    info::NodeId::info(&(node_rank as u32)),
-                ]
-            })
-            .map(|infos| (sys::PMIX_NODE_INFO_ARRAY, infos.as_slice()).into());
+        let node_infos = hostnames.iter().enumerate().map(|(node_rank, &hostname)| {
+            info::NodeInfo::info(&[
+                info::Hostname::info(hostname.into()),
+                info::NodeId::info(&(node_rank as u32)),
+            ])
+        });
         let global_infos = [info::JobSize::info(&(nnodes * nlocalprocs as u32))];
 
         let proc_infos = (0..nnodes).flat_map(|node_rank| {
-            (0..nlocalprocs)
-                .map(move |i| {
-                    let rank = value::Rank((nlocalprocs as u32 * node_rank) + i as u32);
-                    [
-                        info::Rank::info(&rank),
-                        info::LocalRank::info(&i),
-                        info::NodeId::info(&node_rank),
-                    ]
-                })
-                .map(|infos| (sys::PMIX_PROC_INFO_ARRAY, infos.as_slice()).into())
+            (0..nlocalprocs).map(move |i| {
+                let rank = value::Rank((nlocalprocs as u32 * node_rank) + i as u32);
+                info::ProcInfo::info(&[
+                    info::Rank::info(&rank),
+                    info::LocalRank::info(&i),
+                    info::NodeId::info(&node_rank),
+                ])
+            })
         });
 
         let mut infos = global_infos
