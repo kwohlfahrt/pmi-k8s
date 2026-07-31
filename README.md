@@ -4,10 +4,11 @@ This program allows MPI programs to run in Kubernetes jobs, without requiring
 SSH for process launch or coordination. It does this by implementing a PMIx
 server using the [OpenPMIx reference library][OpenPMIx].
 
-> [!CAUTION]
-> This software is currently at the proof-of-concept stage, and has several
-> known bugs and incomplete features. See the "Issues" tab for more details,
-> contributions and advice are very welcome.
+> [!WARNING]
+> This software is currently at the early testing stage. The core functionality
+> has been implemented, but not yet tested at large scale. Some advanced
+> features are missing, see the "Issues" tab for more details. Contributions
+> and advice are very welcome.
 
 ## Usage
 
