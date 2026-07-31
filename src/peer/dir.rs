@@ -3,7 +3,7 @@ use notify::{self, Watcher};
 use std::{
     cell::RefCell,
     collections::HashSet,
-    fs,
+    ffi, fs,
     io::{self, Write},
     net,
     path::Path,
@@ -107,6 +107,11 @@ impl<'a> DirectoryPeers<'a> {
         f.write_all(addr.to_string().as_bytes())?;
         *self.node_rank.borrow_mut() = Some(node_rank);
         Ok(())
+    }
+
+    pub fn hostname(&self) -> Option<ffi::OsString> {
+        let rank = (*self.node_rank.borrow())?;
+        Some(format!("mpi-{}", rank).into())
     }
 }
 

@@ -33,10 +33,11 @@ async fn main() -> Result<(), Error> {
     let fence = NetFence::new(net::SocketAddr::new(WILDCARD, PORT), &peers).await?;
     let modex = NetModex::new(net::SocketAddr::new(WILDCARD, PORT + 1), &peers).await?;
 
+    let hostname = nix::unistd::gethostname()?;
     let hostnames = peers.hostnames().collect::<Vec<_>>();
 
     let tempdir = TempDir::new("pmi-k8s")?;
-    let (s, e) = pmix::server::Server::init(tempdir.path())?;
+    let (s, e) = pmix::server::Server::init(tempdir.path(), &hostname)?;
     let ns = pmix::server::Namespace::register(&s, namespace, &hostnames, args.nproc)?;
     let clients = peers
         .local_ranks()

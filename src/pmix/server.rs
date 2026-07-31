@@ -1,6 +1,7 @@
 use futures::future::select;
 use std::ffi;
 use std::marker::PhantomData;
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::pin::pin;
 use std::ptr;
@@ -41,13 +42,18 @@ pub struct Server<'a> {
 }
 
 impl<'a> Server<'a> {
-    pub fn init(dirname: &'a Path) -> Result<(Self, ServerEvents<'a>), globals::InitError> {
-        #[allow(clippy::unwrap_used, reason = "File paths cannot contain NULL bytes")]
-        let dirname = ffi::CString::new(dirname.as_os_str().as_encoded_bytes()).unwrap();
+    pub fn init(
+        dirname: &'a Path,
+        hostname: &ffi::OsStr,
+    ) -> Result<(Self, ServerEvents<'a>), globals::InitError> {
+        let dirname =
+            ffi::CString::new(dirname.as_os_str().as_encoded_bytes()).expect("invalid file path");
+        let hostname = ffi::CString::new(hostname.as_bytes()).expect("invalid hostname");
         let infos: [sys::pmix_info_t; _] = [
-            info::ServerTmpdir::info(dirname.as_c_str()),
-            info::SystemTmpdir::info(dirname.as_c_str()),
+            info::ServerTmpdir::info(&dirname),
+            info::SystemTmpdir::info(&dirname),
             info::ServerSystemSupport::info(&true),
+            info::Hostname::info(&hostname),
         ];
         let mut module = globals::server_module();
 
@@ -129,6 +135,7 @@ impl<'a> Namespace<'a> {
         let proc_map = ffi::CString::from_str(&proc_map).expect("invalid proc map generated");
 
         let mut infos = [
+            info::UniverseSize::info(&(nnodes * nlocalprocs as u32)),
             info::JobSize::info(&(nnodes * nlocalprocs as u32)),
             info::ProcMap::info(&proc_map),
             info::NodeMap::info(&node_map),
@@ -233,7 +240,7 @@ mod test {
         assert!(!is_initialized());
         {
             let tempdir = TempDir::new("server").unwrap();
-            let _s = Server::init(tempdir.path()).unwrap();
+            let _s = Server::init(tempdir.path(), &nix::unistd::gethostname().unwrap()).unwrap();
             assert!(is_initialized());
         }
         assert!(!is_initialized());

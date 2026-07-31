@@ -12,8 +12,8 @@ fn test_client() {
     let mut cmd = Command::new(program);
     cmd.arg("server")
         .arg(format!("--tempdir={}", tempdir.path().to_str().unwrap()))
-        .arg(format!("--nnodes={}", 1))
-        .arg(format!("--nprocs={}", 1))
+        .arg(format!("--nnodes={}", 2))
+        .arg(format!("--nprocs={}", 2))
         .args(["--", "pmix"]);
     let mut p = cmd.spawn().unwrap();
     let rc = p.wait().unwrap();

@@ -65,7 +65,7 @@ pub(crate) async fn run(args: ServerArgs) -> Result<(), Error> {
     peers.register(&modex.addr()).unwrap();
 
     let server_dir = tmpdir.join("server");
-    let (s, e) = pmix::server::Server::init(&server_dir).unwrap();
+    let (s, e) = pmix::server::Server::init(&server_dir, &peers.hostname().unwrap()).unwrap();
 
     let hostnames = peers.hostnames().collect::<Vec<_>>();
     let namespace = &CString::new(namespace).unwrap();
