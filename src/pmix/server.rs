@@ -4,6 +4,7 @@ use std::marker::PhantomData;
 use std::path::Path;
 use std::pin::pin;
 use std::ptr;
+use std::str::FromStr;
 use tokio::sync::mpsc;
 
 use crate::ModexError;
@@ -14,7 +15,7 @@ use super::{
     env, globals,
     info::{self, Key},
     sys, u8_to_char,
-    value::{self, PmixError, PmixStatus},
+    value::{PmixError, PmixStatus},
 };
 
 pub struct ServerEvents<'a> {
@@ -102,7 +103,7 @@ impl<'a> Namespace<'a> {
     pub fn register(
         _server: &'a Server,
         namespace: &ffi::CStr,
-        hostnames: &[&ffi::CStr],
+        hostnames: &[String],
         nlocalprocs: u16,
     ) -> Result<Self, PmixError> {
         let namespace = namespace.to_bytes_with_nul();
@@ -110,31 +111,28 @@ impl<'a> Namespace<'a> {
         nspace[..namespace.len()].copy_from_slice(u8_to_char(namespace));
 
         let nnodes = hostnames.len() as u32;
+        let node_map = hostnames.join(",");
+        let node_map = ffi::CString::from_str(&node_map).expect("invalid node map generated");
 
-        let node_infos = hostnames.iter().enumerate().map(|(node_rank, &hostname)| {
-            info::NodeInfo::info(&[
-                info::Hostname::info(hostname),
-                info::NodeId::info(&(node_rank as u32)),
-            ])
-        });
-        let global_infos = [info::JobSize::info(&(nnodes * nlocalprocs as u32))];
-
-        let proc_infos = (0..nnodes).flat_map(|node_rank| {
-            (0..nlocalprocs).map(move |i| {
-                let rank = value::Rank((nlocalprocs as u32 * node_rank) + i as u32);
-                info::ProcInfo::info(&[
-                    info::Rank::info(&rank),
-                    info::LocalRank::info(&i),
-                    info::NodeId::info(&node_rank),
-                ])
+        let proc_map = (0..nnodes)
+            .map(|node_rank| {
+                (0..nlocalprocs)
+                    .map(move |i| {
+                        let rank = (nlocalprocs as u32 * node_rank) + i as u32;
+                        rank.to_string()
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",")
             })
-        });
+            .collect::<Vec<_>>()
+            .join(";");
+        let proc_map = ffi::CString::from_str(&proc_map).expect("invalid proc map generated");
 
-        let mut infos = global_infos
-            .into_iter()
-            .chain(proc_infos)
-            .chain(node_infos)
-            .collect::<Vec<_>>();
+        let mut infos = [
+            info::JobSize::info(&(nnodes * nlocalprocs as u32)),
+            info::ProcMap::info(&proc_map),
+            info::NodeMap::info(&node_map),
+        ];
 
         // SAFETY: No significant safety concerns.
         PmixStatus(unsafe {
