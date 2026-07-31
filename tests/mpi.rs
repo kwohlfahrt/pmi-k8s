@@ -4,11 +4,10 @@ use std::process::Command;
 
 use tempdir::TempDir;
 
-fn test_mpi(envs: Vec<(&str, &str)>) {
+fn test_mpi(envs: Vec<(&str, &str)>, nnodes: u32) {
     let tempdir = TempDir::new("test-mpi").unwrap();
     let program = env!("CARGO_BIN_EXE_mock");
 
-    let nnodes = 2;
     let nprocs = 2;
     let mut ps = (0..nnodes)
         .map(|_| {
@@ -31,10 +30,15 @@ fn test_mpi(envs: Vec<(&str, &str)>) {
 
 #[test]
 fn test_fence() {
-    test_mpi(vec![("OMPI_MCA_pmix_base_async_modex", "0")])
+    test_mpi(vec![("OMPI_MCA_pmix_base_async_modex", "0")], 2)
 }
 
 #[test]
 fn test_direct_modex() {
-    test_mpi(vec![("OMPI_MCA_pmix_base_async_modex", "1")])
+    test_mpi(vec![("OMPI_MCA_pmix_base_async_modex", "1")], 2)
+}
+
+#[test]
+fn test_sm() {
+    test_mpi(vec![("OMPI_MCA_btl", "self,sm")], 1)
 }
