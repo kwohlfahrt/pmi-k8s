@@ -40,7 +40,9 @@ pub(crate) async fn run(args: ServerArgs) -> Result<(), Error> {
         command,
     } = args;
 
-    let namespace = "foo";
+    // Namespace must be unique among concurrent processes. Otherwise, the
+    // shared-memory files collide.
+    let namespace = tmpdir.file_name().unwrap().to_str().unwrap();
 
     let peer_dir = tmpdir.join("peer-discovery-fence");
     fs::create_dir_all(&peer_dir).unwrap();

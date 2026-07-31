@@ -49,7 +49,7 @@ fn pmix() -> Result<(), Error> {
     assert_eq!(v.get(), &4);
 
     let v = c.get_proc::<pmix::info::LocalRank>(None)?;
-    assert!((0..4).contains(v.get()));
+    assert!([0, 1].contains(v.get()));
 
     let v = c.get_proc::<pmix::info::LocalSize>(None)?;
     assert_eq!(v.get(), &2);
