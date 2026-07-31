@@ -1,7 +1,7 @@
 use futures::{StreamExt, TryStreamExt};
 use std::{
     collections::{HashMap, HashSet},
-    env, ffi, net,
+    env, net,
     pin::pin,
 };
 
@@ -192,11 +192,8 @@ impl PeerDiscovery for KubernetesPeers {
         (self.node_rank * self.nproc as u32)..((self.node_rank + 1) * self.nproc as u32)
     }
 
-    fn hostnames(&self) -> impl Iterator<Item = ffi::CString> {
-        (0..self.nnodes).map(|rank| {
-            #[allow(clippy::unwrap_used, reason = "Literal string without NULLs")]
-            ffi::CString::new(format!("{}-{}", self.job_name, rank)).unwrap()
-        })
+    fn hostnames(&self) -> impl Iterator<Item = String> {
+        (0..self.nnodes).map(|rank| format!("{}-{}", self.job_name, rank))
     }
 
     fn node_rank(&self) -> u32 {

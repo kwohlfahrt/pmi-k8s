@@ -9,29 +9,29 @@ name = "mock"
 required-features = ["test-bins"]
 
 [dependencies]
-futures = "0.3.31"
+futures = "0.3"
 tokio = { version = "1", features = ["rt", "macros", "io-util", "process", "fs", "signal"] }
 tokio-stream = { version = "0.1", features = ["net", "sync"] }
-kube = { version = "3", features = ["runtime", "derive"] }
-k8s-openapi = { version = "0.27", features = ["v1_35"] }
+kube = { version = "4", features = ["runtime", "derive"] }
+k8s-openapi = { version = "0.28", features = ["latest"] }
 thiserror = "2"
-libc = "0.2.180"
-nix = { version = "0.31.0", features = ["user"] }
-tempdir = { version = "0.3.7" }
+libc = "0.2"
+nix = { version = "0.31", features = ["user", "hostname"] }
+tempdir = { version = "0.3" }
 tracing = "0.1"
 # Entry-point dependencies
-clap = { version = "4.5.57", features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 # Test dependencies
-mpi = { version = "0.8.1", optional = true }
-notify = { version = "8.2.0", optional = true }
+mpi = { version = "0.8", optional = true }
+notify = { version = "8", optional = true }
 
 [build-dependencies]
 bindgen = "0.72"
 pkg-config = "0.3"
 
 [dev-dependencies]
-serial_test = "3.3.1"
+serial_test = "4"
 
 [features]
 test-bins = ["dep:mpi", "dep:notify"]

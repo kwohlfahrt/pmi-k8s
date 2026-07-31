@@ -9,7 +9,7 @@ use std::{
 
 use kube::Config;
 
-pub fn patch_kubeconfig_for_docker(config: kube::Config) -> kube::Config {
+pub fn patch_kubeconfig_for_docker(mut config: kube::Config) -> kube::Config {
     // This is a hack to let me use the same kubeconfig (for a kind cluster)
     // inside a devcontainer.
     let is_docker_container = Path::new("/.dockerenv").exists();
@@ -24,16 +24,11 @@ pub fn patch_kubeconfig_for_docker(config: kube::Config) -> kube::Config {
         };
         let mut parts = config.cluster_url.into_parts();
         parts.authority = Some(authority.try_into().unwrap());
-        let cluster_url = parts.try_into().unwrap();
 
-        kube::Config {
-            cluster_url,
-            tls_server_name,
-            ..config
-        }
-    } else {
-        config
+        config.cluster_url = parts.try_into().unwrap();
+        config.tls_server_name = tls_server_name;
     }
+    config
 }
 
 fn kubectl_cmd(config: &kube::Config) -> Command {

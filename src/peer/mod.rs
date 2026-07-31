@@ -1,4 +1,4 @@
-use std::{error::Error, ffi, net};
+use std::{error::Error, net};
 
 #[cfg(feature = "test-bins")]
 mod dir;
@@ -31,6 +31,6 @@ pub trait PeerDiscovery {
     ) -> Result<Vec<net::SocketAddr>, Self::Error>;
 
     fn local_ranks(&self) -> impl Iterator<Item = u32>;
-    fn hostnames(&self) -> impl Iterator<Item = ffi::CString>;
+    fn hostnames(&self) -> impl Iterator<Item = String>;
     fn node_rank(&self) -> u32;
 }

@@ -46,9 +46,12 @@ fn pmix() -> Result<(), Error> {
     let namespace = c.namespace().to_str().unwrap();
     assert!(!namespace.starts_with("singleton."));
     let v = c.get_job::<pmix::info::JobSize>(None)?;
-    assert_eq!(v.get(), &1);
+    assert_eq!(v.get(), &4);
 
     let v = c.get_proc::<pmix::info::LocalRank>(None)?;
-    assert_eq!(v.get(), &0);
+    assert!([0, 1].contains(v.get()));
+
+    let v = c.get_proc::<pmix::info::LocalSize>(None)?;
+    assert_eq!(v.get(), &2);
     Ok(())
 }

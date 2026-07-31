@@ -1,9 +1,11 @@
 use futures::future::select;
 use std::ffi;
 use std::marker::PhantomData;
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::pin::pin;
 use std::ptr;
+use std::str::FromStr;
 use tokio::sync::mpsc;
 
 use crate::ModexError;
@@ -14,7 +16,7 @@ use super::{
     env, globals,
     info::{self, Key},
     sys, u8_to_char,
-    value::{self, PmixError, PmixStatus},
+    value::{PmixError, PmixStatus},
 };
 
 pub struct ServerEvents<'a> {
@@ -40,13 +42,18 @@ pub struct Server<'a> {
 }
 
 impl<'a> Server<'a> {
-    pub fn init(dirname: &'a Path) -> Result<(Self, ServerEvents<'a>), globals::InitError> {
-        #[allow(clippy::unwrap_used, reason = "File paths cannot contain NULL bytes")]
-        let dirname = ffi::CString::new(dirname.as_os_str().as_encoded_bytes()).unwrap();
+    pub fn init(
+        dirname: &'a Path,
+        hostname: &ffi::OsStr,
+    ) -> Result<(Self, ServerEvents<'a>), globals::InitError> {
+        let dirname =
+            ffi::CString::new(dirname.as_os_str().as_encoded_bytes()).expect("invalid file path");
+        let hostname = ffi::CString::new(hostname.as_bytes()).expect("invalid hostname");
         let infos: [sys::pmix_info_t; _] = [
-            info::ServerTmpdir::info(dirname.as_c_str()),
-            info::SystemTmpdir::info(dirname.as_c_str()),
+            info::ServerTmpdir::info(&dirname),
+            info::SystemTmpdir::info(&dirname),
             info::ServerSystemSupport::info(&true),
+            info::Hostname::info(&hostname),
         ];
         let mut module = globals::server_module();
 
@@ -102,7 +109,7 @@ impl<'a> Namespace<'a> {
     pub fn register(
         _server: &'a Server,
         namespace: &ffi::CStr,
-        hostnames: &[&ffi::CStr],
+        hostnames: &[String],
         nlocalprocs: u16,
     ) -> Result<Self, PmixError> {
         let namespace = namespace.to_bytes_with_nul();
@@ -110,31 +117,29 @@ impl<'a> Namespace<'a> {
         nspace[..namespace.len()].copy_from_slice(u8_to_char(namespace));
 
         let nnodes = hostnames.len() as u32;
+        let node_map = hostnames.join(",");
+        let node_map = ffi::CString::from_str(&node_map).expect("invalid node map generated");
 
-        let node_infos = hostnames.iter().enumerate().map(|(node_rank, &hostname)| {
-            info::NodeInfo::info(&[
-                info::Hostname::info(hostname),
-                info::NodeId::info(&(node_rank as u32)),
-            ])
-        });
-        let global_infos = [info::JobSize::info(&(nnodes * nlocalprocs as u32))];
-
-        let proc_infos = (0..nnodes).flat_map(|node_rank| {
-            (0..nlocalprocs).map(move |i| {
-                let rank = value::Rank((nlocalprocs as u32 * node_rank) + i as u32);
-                info::ProcInfo::info(&[
-                    info::Rank::info(&rank),
-                    info::LocalRank::info(&i),
-                    info::NodeId::info(&node_rank),
-                ])
+        let proc_map = (0..nnodes)
+            .map(|node_rank| {
+                (0..nlocalprocs)
+                    .map(move |i| {
+                        let rank = (nlocalprocs as u32 * node_rank) + i as u32;
+                        rank.to_string()
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",")
             })
-        });
+            .collect::<Vec<_>>()
+            .join(";");
+        let proc_map = ffi::CString::from_str(&proc_map).expect("invalid proc map generated");
 
-        let mut infos = global_infos
-            .into_iter()
-            .chain(proc_infos)
-            .chain(node_infos)
-            .collect::<Vec<_>>();
+        let mut infos = [
+            info::UniverseSize::info(&(nnodes * nlocalprocs as u32)),
+            info::JobSize::info(&(nnodes * nlocalprocs as u32)),
+            info::ProcMap::info(&proc_map),
+            info::NodeMap::info(&node_map),
+        ];
 
         // SAFETY: No significant safety concerns.
         PmixStatus(unsafe {
@@ -235,7 +240,7 @@ mod test {
         assert!(!is_initialized());
         {
             let tempdir = TempDir::new("server").unwrap();
-            let _s = Server::init(tempdir.path()).unwrap();
+            let _s = Server::init(tempdir.path(), &nix::unistd::gethostname().unwrap()).unwrap();
             assert!(is_initialized());
         }
         assert!(!is_initialized());

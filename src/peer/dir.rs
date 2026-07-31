@@ -108,6 +108,11 @@ impl<'a> DirectoryPeers<'a> {
         *self.node_rank.borrow_mut() = Some(node_rank);
         Ok(())
     }
+
+    pub fn hostname(&self) -> Option<ffi::OsString> {
+        let rank = (*self.node_rank.borrow())?;
+        Some(format!("mpi-{}", rank).into())
+    }
 }
 
 impl<'a> PeerDiscovery for DirectoryPeers<'a> {
@@ -162,12 +167,9 @@ impl<'a> PeerDiscovery for DirectoryPeers<'a> {
         (node_rank * self.nproc as u32)..((node_rank + 1) * self.nproc as u32)
     }
 
-    fn hostnames(&self) -> impl Iterator<Item = std::ffi::CString> {
+    fn hostnames(&self) -> impl Iterator<Item = String> {
         // These hostnames don't actually resolve, but that doesn't seem to matter.
-        (0..self.nnodes).map(|rank| {
-            #[allow(clippy::unwrap_used, reason = "Literal string without NULLs")]
-            ffi::CString::new(format!("mpi-{}", rank)).unwrap()
-        })
+        (0..self.nnodes).map(|rank| format!("mpi-{}", rank))
     }
 
     fn node_rank(&self) -> u32 {

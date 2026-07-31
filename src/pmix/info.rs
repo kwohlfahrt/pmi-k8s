@@ -50,17 +50,28 @@ macro_rules! pmix_info_key_from {
     };
 }
 
+pmix_info_key_from!(UniverseSize, u32, sys::PMIX_UNIV_SIZE);
 pmix_info_key_from!(SessionInfo, bool, sys::PMIX_SESSION_INFO);
 pmix_info_key_from!(SessionId, u32, sys::PMIX_SESSION_ID);
+pmix_info_key_from!(NodeMap, ffi::CStr, sys::PMIX_NODE_MAP);
+pmix_info_key_from!(ProcMap, ffi::CStr, sys::PMIX_PROC_MAP);
+pmix_info_key_from!(NumNodes, u32, sys::PMIX_NUM_NODES);
 pmix_info_key_from!(JobInfo, bool, sys::PMIX_JOB_INFO);
+pmix_info_key_from!(JobInfoArray, [sys::pmix_info_t], sys::PMIX_JOB_INFO_ARRAY);
+pmix_info_key_from!(JobId, ffi::CStr, sys::PMIX_JOBID);
 
 pmix_info_key_from!(JobSize, u32, sys::PMIX_JOB_SIZE);
+pmix_info_key_from!(MaxProcs, u32, sys::PMIX_MAX_PROCS);
+pmix_info_key_from!(NodeInfo, [sys::pmix_info_t], sys::PMIX_NODE_INFO_ARRAY);
+pmix_info_key_from!(Hostname, ffi::CStr, sys::PMIX_HOSTNAME);
+pmix_info_key_from!(LocalLeader, value::Rank, sys::PMIX_LOCALLDR);
+pmix_info_key_from!(ProcInfo, [sys::pmix_info_t], sys::PMIX_PROC_INFO_ARRAY);
 pmix_info_key_from!(Rank, value::Rank, sys::PMIX_RANK);
 pmix_info_key_from!(LocalRank, u16, sys::PMIX_LOCAL_RANK);
+pmix_info_key_from!(NodeRank, u16, sys::PMIX_NODE_RANK);
 pmix_info_key_from!(NodeId, u32, sys::PMIX_NODEID);
-pmix_info_key_from!(Hostname, ffi::CStr, sys::PMIX_HOSTNAME);
-pmix_info_key_from!(NodeInfo, [sys::pmix_info_t], sys::PMIX_NODE_INFO_ARRAY);
-pmix_info_key_from!(ProcInfo, [sys::pmix_info_t], sys::PMIX_PROC_INFO_ARRAY);
+pmix_info_key_from!(LocalSize, u32, sys::PMIX_LOCAL_SIZE);
+// TODO: Local CPU-sets
 pmix_info_key_from!(ServerTmpdir, ffi::CStr, sys::PMIX_SERVER_TMPDIR);
 pmix_info_key_from!(SystemTmpdir, ffi::CStr, sys::PMIX_SYSTEM_TMPDIR);
 pmix_info_key_from!(ServerSystemSupport, bool, sys::PMIX_SERVER_SYSTEM_SUPPORT);
