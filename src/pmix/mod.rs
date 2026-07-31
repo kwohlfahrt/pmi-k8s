@@ -6,7 +6,8 @@ pub mod env;
 pub mod globals;
 pub mod server;
 pub mod sys;
-mod value;
+pub mod value;
+pub mod info;
 
 pub use value::{PmixError, PmixStatus};
 

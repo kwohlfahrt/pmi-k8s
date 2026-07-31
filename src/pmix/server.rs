@@ -11,8 +11,10 @@ use crate::peer::PeerDiscovery;
 
 use super::super::{fence, modex};
 use super::{
-    env, globals, sys, u8_to_char,
-    value::{PmixError, PmixStatus, Rank},
+    env, globals,
+    info::{self, Key},
+    sys, u8_to_char,
+    value::{self, PmixError, PmixStatus},
 };
 
 pub struct ServerEvents<'a> {
@@ -42,9 +44,9 @@ impl<'a> Server<'a> {
         #[allow(clippy::unwrap_used, reason = "File paths cannot contain NULL bytes")]
         let dirname = ffi::CString::new(dirname.as_os_str().as_encoded_bytes()).unwrap();
         let infos: [sys::pmix_info_t; _] = [
-            (sys::PMIX_SERVER_TMPDIR, dirname.as_c_str()).into(),
-            (sys::PMIX_SYSTEM_TMPDIR, dirname.as_c_str()).into(),
-            (sys::PMIX_SERVER_SYSTEM_SUPPORT, true).into(),
+            info::ServerTmpdir::info(dirname.as_c_str()),
+            info::SystemTmpdir::info(dirname.as_c_str()),
+            info::ServerSystemSupport::info(&true),
         ];
         let mut module = globals::server_module();
 
@@ -109,29 +111,23 @@ impl<'a> Namespace<'a> {
 
         let nnodes = hostnames.len() as u32;
 
-        let node_infos = hostnames
-            .iter()
-            .enumerate()
-            .map(|(node_rank, hostname)| {
-                [
-                    (sys::PMIX_HOSTNAME, *hostname).into(),
-                    (sys::PMIX_NODEID, node_rank).into(),
-                ]
-            })
-            .map(|infos| (sys::PMIX_NODE_INFO_ARRAY, infos.as_slice()).into());
-        let global_infos = [(sys::PMIX_JOB_SIZE, nnodes * nlocalprocs as u32).into()];
+        let node_infos = hostnames.iter().enumerate().map(|(node_rank, &hostname)| {
+            info::NodeInfo::info(&[
+                info::Hostname::info(hostname),
+                info::NodeId::info(&(node_rank as u32)),
+            ])
+        });
+        let global_infos = [info::JobSize::info(&(nnodes * nlocalprocs as u32))];
 
         let proc_infos = (0..nnodes).flat_map(|node_rank| {
-            (0..nlocalprocs)
-                .map(move |i| {
-                    let rank = Rank((nlocalprocs as u32 * node_rank) + i as u32);
-                    [
-                        (sys::PMIX_RANK, rank).into(),
-                        (sys::PMIX_LOCAL_RANK, i).into(),
-                        (sys::PMIX_NODEID, node_rank).into(),
-                    ]
-                })
-                .map(|infos| (sys::PMIX_PROC_INFO_ARRAY, infos.as_slice()).into())
+            (0..nlocalprocs).map(move |i| {
+                let rank = value::Rank((nlocalprocs as u32 * node_rank) + i as u32);
+                info::ProcInfo::info(&[
+                    info::Rank::info(&rank),
+                    info::LocalRank::info(&i),
+                    info::NodeId::info(&node_rank),
+                ])
+            })
         });
 
         let mut infos = global_infos
